@@ -2,6 +2,7 @@ package com.rosettix.api.service;
 
 import com.google.genai.Client;
 import com.google.genai.types.GenerateContentResponse;
+import com.rosettix.api.service.SchemaManagerService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -10,12 +11,12 @@ import org.springframework.stereotype.Service;
 public class LlmService {
 
     private final Client geminiClient; // Injected from your GeminiConfig
+    private final SchemaManagerService schemaManagerService;
 
     private static final String MODEL_NAME = "gemini-2.5-flash";
 
     public String generateQuery(String question) {
-        String schema =
-            "CREATE TABLE customers (id SERIAL PRIMARY KEY, name VARCHAR(255), city VARCHAR(100));";
+        String schema = schemaManagerService.getDatabaseSchema();
         String prompt = String.format(
             "Given the SQL schema: %s\n---\nTranslate the following question into a single, valid PostgreSQL query. Do not add any explanation, comments, or markdown formatting.\nQuestion: \"%s\"",
             schema,
