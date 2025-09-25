@@ -2,17 +2,17 @@ package com.rosettix.api.service;
 
 import java.util.List;
 import java.util.Map;
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
+@RequiredArgsConstructor
 public class OrchestratorService {
 
-    @Autowired
-    private LlmService llmService;
+    private final LlmService llmService;
 
-    @Autowired
-    private DbExecutionService dbExecutionService;
+    private final DbExecutionService dbExecutionService;
 
     public List<Map<String, Object>> processQuery(String question) {
         // Step 1: Get the SQL from the LLM service
