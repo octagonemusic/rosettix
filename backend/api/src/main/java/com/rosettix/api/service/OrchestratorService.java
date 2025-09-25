@@ -1,9 +1,9 @@
 package com.rosettix.api.service;
 
+import com.rosettix.api.strategy.DatabaseStrategy;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -11,14 +11,14 @@ import org.springframework.stereotype.Service;
 public class OrchestratorService {
 
     private final LlmService llmService;
-
-    private final DbExecutionService dbExecutionService;
+    private final Map<String, DatabaseStrategy> strategies; // Spring will inject all strategies here
 
     public List<Map<String, Object>> processQuery(String question) {
-        // Step 1: Get the SQL from the LLM service
-        String sqlQuery = llmService.generateQuery(question);
+        // For now, we'll hardcode to use the "postgres" strategy.
+        // Later, the user's request will specify which one to use.
+        DatabaseStrategy strategy = strategies.get("postgres");
 
-        // Step 2: Execute the SQL and return the result
-        return dbExecutionService.executeSql(sqlQuery);
+        String sqlQuery = llmService.generateQuery(question, strategy);
+        return strategy.executeQuery(sqlQuery);
     }
 }

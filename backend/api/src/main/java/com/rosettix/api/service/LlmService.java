@@ -2,7 +2,7 @@ package com.rosettix.api.service;
 
 import com.google.genai.Client;
 import com.google.genai.types.GenerateContentResponse;
-import com.rosettix.api.service.SchemaManagerService;
+import com.rosettix.api.strategy.DatabaseStrategy;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -11,15 +11,18 @@ import org.springframework.stereotype.Service;
 public class LlmService {
 
     private final Client geminiClient; // Injected from your GeminiConfig
-    private final SchemaManagerService schemaManagerService;
 
-    private static final String MODEL_NAME = "gemini-2.5-flash";
+    private static final String MODEL_NAME = "gemini-2.5-flash"; // Using a more recent model name
 
-    public String generateQuery(String question) {
-        String schema = schemaManagerService.getDatabaseSchema();
+    public String generateQuery(String question, DatabaseStrategy strategy) {
+        String schema = strategy.getSchemaRepresentation();
+        String dialect = strategy.getQueryDialect();
+
         String prompt = String.format(
-            "Given the SQL schema: %s\n---\nTranslate the following question into a single, valid PostgreSQL query. Do not add any explanation, comments, or markdown formatting.\nQuestion: \"%s\"",
+            "Given the %s schema: \n%s\n---\nTranslate the question into a single, valid %s query. Do not add any explanation, comments, or markdown formatting.\nQuestion: \"%s\"",
+            dialect,
             schema,
+            dialect,
             question
         );
 
@@ -27,12 +30,24 @@ public class LlmService {
             GenerateContentResponse response =
                 geminiClient.models.generateContent(MODEL_NAME, prompt, null);
 
-            return response.text().trim();
+            // The KEY CHANGE is here: Clean the response before returning it.
+            return cleanSqlQuery(response.text());
         } catch (Exception e) {
-            // Catching the general Exception class will handle any error from the SDK
             System.err.println("Error calling Gemini API: " + e.getMessage());
             e.printStackTrace();
             return "Error: Could not generate query.";
         }
+    }
+
+    /**
+     * Cleans the raw text response from the LLM by removing Markdown code blocks.
+     * @param rawSql The raw text from the LLM.
+     * @return A clean, executable SQL query.
+     */
+    private String cleanSqlQuery(String rawSql) {
+        // Remove the markdown code block delimiters "```sql" or "```"
+        String cleanedSql = rawSql.replace("```sql", "").replace("```", "");
+        // Trim any leading/trailing whitespace and semicolons
+        return cleanedSql.trim().replaceAll(";", "");
     }
 }
