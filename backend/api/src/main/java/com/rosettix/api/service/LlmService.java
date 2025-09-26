@@ -4,10 +4,12 @@ import com.google.genai.Client;
 import com.google.genai.types.GenerateContentResponse;
 import com.rosettix.api.strategy.DatabaseStrategy;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class LlmService {
 
     private final Client geminiClient; // Injected from your GeminiConfig
@@ -19,22 +21,21 @@ public class LlmService {
         String dialect = strategy.getQueryDialect();
 
         String prompt = String.format(
-            "Given the %s schema: \n%s\n---\nTranslate the question into a single, valid %s query. Do not add any explanation, comments, or markdown formatting.\nQuestion: \"%s\"",
-            dialect,
-            schema,
-            dialect,
-            question
+                "Given the %s schema: \n%s\n---\nTranslate the question into a single, valid %s query. Do not add any explanation, comments, or markdown formatting.\nQuestion: \"%s\"",
+                dialect,
+                schema,
+                dialect,
+                question
         );
 
         try {
             GenerateContentResponse response =
-                geminiClient.models.generateContent(MODEL_NAME, prompt, null);
+                    geminiClient.models.generateContent(MODEL_NAME, prompt, null);
 
-            // The KEY CHANGE is here: Clean the response before returning it.
+            // Clean the response before returning it
             return cleanSqlQuery(response.text());
         } catch (Exception e) {
-            System.err.println("Error calling Gemini API: " + e.getMessage());
-            e.printStackTrace();
+            log.error("Error calling Gemini API for question '{}': {}", question, e.getMessage(), e);
             return "Error: Could not generate query.";
         }
     }
