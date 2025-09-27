@@ -2,7 +2,9 @@ package com.rosettix.api.service;
 
 import com.google.genai.Client;
 import com.google.genai.types.GenerateContentResponse;
-import com.rosettix.api.strategy.DatabaseStrategy;
+import com.rosettix.api.config.RosettixConfiguration;
+import com.rosettix.api.exception.QueryException;
+import com.rosettix.api.strategy.QueryStrategy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -13,42 +15,35 @@ import org.springframework.stereotype.Service;
 public class LlmService {
 
     private final Client geminiClient; // Injected from your GeminiConfig
+    private final RosettixConfiguration rosettixConfiguration;
 
-    private static final String MODEL_NAME = "gemini-2.5-flash"; // Using a more recent model name
-
-    public String generateQuery(String question, DatabaseStrategy strategy) {
+    public String generateQuery(String question, QueryStrategy strategy) {
         String schema = strategy.getSchemaRepresentation();
-        String dialect = strategy.getQueryDialect();
+        String queryLanguage = strategy.getQueryLanguage();
 
-        String prompt = String.format(
-                "Given the %s schema: \n%s\n---\nTranslate the question into a single, valid %s query. Do not add any explanation, comments, or markdown formatting.\nQuestion: \"%s\"",
-                dialect,
-                schema,
-                dialect,
-                question
-        );
+        String prompt = strategy.buildPrompt(question, schema);
 
         try {
+            String modelName = rosettixConfiguration.getLlm().getModelName();
             GenerateContentResponse response =
-                    geminiClient.models.generateContent(MODEL_NAME, prompt, null);
+                geminiClient.models.generateContent(modelName, prompt, null);
 
-            // Clean the response before returning it
-            return cleanSqlQuery(response.text());
+            // Clean the response using strategy-specific cleaning
+            return strategy.cleanQuery(response.text());
         } catch (Exception e) {
-            log.error("Error calling Gemini API for question '{}': {}", question, e.getMessage(), e);
-            return "Error: Could not generate query.";
+            log.error(
+                "Error calling Gemini API for question '{}': {}",
+                question,
+                e.getMessage(),
+                e
+            );
+            throw new QueryException(
+                "Error calling Gemini API: " + e.getMessage(),
+                strategy.getStrategyName(),
+                null,
+                QueryException.ErrorType.LLM_ERROR,
+                e
+            );
         }
-    }
-
-    /**
-     * Cleans the raw text response from the LLM by removing Markdown code blocks.
-     * @param rawSql The raw text from the LLM.
-     * @return A clean, executable SQL query.
-     */
-    private String cleanSqlQuery(String rawSql) {
-        // Remove the markdown code block delimiters "```sql" or "```"
-        String cleanedSql = rawSql.replace("```sql", "").replace("```", "");
-        // Trim any leading/trailing whitespace and semicolons
-        return cleanedSql.trim().replaceAll(";", "");
     }
 }

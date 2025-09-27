@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 
 @Component("postgres") // We give it a name to find it later
 @RequiredArgsConstructor
-public class PostgresStrategy implements DatabaseStrategy {
+public class PostgresStrategy implements QueryStrategy {
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -43,8 +43,67 @@ public class PostgresStrategy implements DatabaseStrategy {
     }
 
     @Override
-    public String getQueryDialect() {
+    public String getQueryLanguage() {
         return "PostgreSQL";
+    }
+
+    @Override
+    public String getStrategyName() {
+        return "postgres";
+    }
+
+    @Override
+    public boolean isQuerySafe(String query) {
+        if (query == null || query.trim().isEmpty()) {
+            return false;
+        }
+
+        // Basic SQL injection protection - prevent dangerous operations
+        String lowerQuery = query.toLowerCase().trim();
+        String[] dangerousKeywords = {
+            "drop",
+            "delete",
+            "truncate",
+            "alter",
+            "create",
+            "insert",
+            "update",
+        };
+
+        for (String keyword : dangerousKeywords) {
+            if (
+                lowerQuery.startsWith(keyword + " ") ||
+                lowerQuery.contains(";" + keyword + " ")
+            ) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    @Override
+    public String buildPrompt(String question, String schema) {
+        return String.format(
+            "Given the PostgreSQL schema: \n%s\n---\nTranslate the question into a single, valid PostgreSQL SELECT query. " +
+                "Do not add any explanation, comments, or markdown formatting. " +
+                "Only return the SQL query.\nQuestion: \"%s\"",
+            schema,
+            question
+        );
+    }
+
+    @Override
+    public String cleanQuery(String rawQuery) {
+        if (rawQuery == null) {
+            return "";
+        }
+
+        // Remove common markdown code block delimiters
+        String cleaned = rawQuery.replace("```sql", "").replace("```", "");
+
+        // Trim whitespace and remove trailing semicolons
+        return cleaned.trim().replaceAll(";+\\s*$", "");
     }
 
     @Override
