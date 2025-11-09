@@ -1,6 +1,5 @@
 package com.rosettix.api.strategy;
 
-import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoIterable;
 import com.mongodb.client.result.DeleteResult;
 import com.mongodb.client.result.UpdateResult;
@@ -69,20 +68,20 @@ public class MongoStrategy implements QueryStrategy {
     @Override
     public String buildPrompt(String question, String schema) {
         return String.format(
-            "Given the MongoDB collections and their example fields: \n%s\n---\n" +
-            "Translate the question into a valid MongoDB query using this syntax:\n" +
-            "db.collection.find({filter}) or db.collection.count({filter}) " +
-            "or db.collection.insertOne({...}) or db.collection.updateOne({filter}, {update}) " +
-            "or db.collection.deleteOne({filter}).\n\n" +
-            "Important:\n" +
-            "• Use **valid JSON** format for filters and updates.\n" +
-            "• For string fields, you may use BSON-style regex: { field: { \"$regex\": \"pattern\", \"$options\": \"i\" } }.\n" +
-            "• For numeric fields (like IDs, ages, counts), use direct equality (e.g., { field: 9 }).\n" +
-            "• Do NOT use JavaScript-style regex like /pattern/i.\n" +
-            "• Always use field names and data types exactly as shown in the schema.\n" +
-            "• Avoid unsafe commands like eval(), $where, mapReduce, or db.runCommand.\n\n" +
-            "Return only the query (no markdown, no explanation).\nQuestion: \"%s\"",
-            schema, question
+                "Given the MongoDB collections and their example fields: \n%s\n---\n" +
+                        "Translate the question into a valid MongoDB query using this syntax:\n" +
+                        "db.collection.find({filter}) or db.collection.count({filter}) " +
+                        "or db.collection.insertOne({...}) or db.collection.updateOne({filter}, {update}) " +
+                        "or db.collection.deleteOne({filter}).\n\n" +
+                        "Important:\n" +
+                        "• Use **valid JSON** format for filters and updates.\n" +
+                        "• For string fields, you may use BSON-style regex: { field: { \"$regex\": \"pattern\", \"$options\": \"i\" } }.\n" +
+                        "• For numeric fields (like IDs, ages, counts), use direct equality (e.g., { field: 9 }).\n" +
+                        "• Do NOT use JavaScript-style regex like /pattern/i.\n" +
+                        "• Always use field names and data types exactly as shown in the schema.\n" +
+                        "• Avoid unsafe commands like eval(), $where, mapReduce, or db.runCommand.\n\n" +
+                        "Return only the query (no markdown, no explanation).\nQuestion: \"%s\"",
+                schema, question
         );
     }
 
@@ -101,8 +100,8 @@ public class MongoStrategy implements QueryStrategy {
     // 3️⃣ SAFETY FILTER
     // ============================================================
     private static final Pattern UNSAFE = Pattern.compile(
-        "(dropdatabase|drop|eval|mapreduce|db\\.runcommand|\\$where)",
-        Pattern.CASE_INSENSITIVE
+            "(dropdatabase|drop|eval|mapreduce|db\\.runcommand|\\$where)",
+            Pattern.CASE_INSENSITIVE
     );
 
     @Override
@@ -110,8 +109,8 @@ public class MongoStrategy implements QueryStrategy {
         if (query == null || query.isBlank()) return false;
         String lower = query.toLowerCase(Locale.ROOT);
         return lower.startsWith("db.")
-            && !UNSAFE.matcher(lower).find()
-            && (lower.contains(".find(")
+                && !UNSAFE.matcher(lower).find()
+                && (lower.contains(".find(")
                 || lower.contains(".count(")
                 || lower.contains(".insertone(")
                 || lower.contains(".updateone(")
@@ -123,7 +122,7 @@ public class MongoStrategy implements QueryStrategy {
     // ============================================================
     @Override
     public List<Map<String, Object>> executeQuery(String query) {
-        if (query == null || query.isBlank()) 
+        if (query == null || query.isBlank())
             throw new IllegalArgumentException("Query cannot be null or empty");
 
         if (!isQuerySafe(query))
@@ -140,7 +139,7 @@ public class MongoStrategy implements QueryStrategy {
             else if (lower.contains(".deleteone(")) return executeDelete(query);
             else
                 throw new IllegalArgumentException(
-                    "Only find(), count(), insertOne(), updateOne(), and deleteOne() are supported."
+                        "Only find(), count(), insertOne(), updateOne(), and deleteOne() are supported."
                 );
 
         } catch (Exception e) {
@@ -165,7 +164,6 @@ public class MongoStrategy implements QueryStrategy {
         return (end > start) ? query.substring(start, end).trim() : "{}";
     }
 
-    // Normalize JS regex (/pattern/i) → BSON style {"$regex": "pattern", "$options": "i"}
     private String normalizeRegex(String json) {
         if (json == null || json.isBlank()) return json;
         return json.replaceAll("/(.*?)/i", "{\"$regex\": \"$1\", \"$options\": \"i\"}");
@@ -221,7 +219,6 @@ public class MongoStrategy implements QueryStrategy {
         String filterJson = normalizeRegex(extractContent(query, "deleteone"));
         Document filter = filterJson.isBlank() ? new Document() : Document.parse(filterJson);
 
-        // 🧠 Smart numeric conversion for regex like "^9$" → integer match
         for (String key : new ArrayList<>(filter.keySet())) {
             Object value = filter.get(key);
             if (value instanceof Document valDoc && valDoc.containsKey("$regex")) {
@@ -243,44 +240,47 @@ public class MongoStrategy implements QueryStrategy {
     }
 
     // ============================================================
-    // 6️⃣ EXPLICIT SAFE WRITES (FOR SAGA)
+    // 6️⃣ AI-BASED SAFE WRITES (FOR SAGA)
     // ============================================================
     public ObjectId insert(String collectionName, Document doc) {
         if (doc == null) throw new IllegalArgumentException("Document cannot be null");
-        MongoCollection<Document> col = mongoTemplate.getDb().getCollection(collectionName);
         if (!doc.containsKey("_id")) doc.put("_id", new ObjectId());
-        col.insertOne(doc);
-        log.debug("Inserted document into {} with _id={}", collectionName, doc.getObjectId("_id"));
+        String query = String.format("db.%s.insertOne(%s)", collectionName, doc.toJson());
+        executeQuery(query);
+        log.debug("AI-insert executed for {} with _id={}", collectionName, doc.getObjectId("_id"));
         return doc.getObjectId("_id");
     }
 
     public long updateOne(String collectionName, Document filter, Document update) {
-        MongoCollection<Document> col = mongoTemplate.getDb().getCollection(collectionName);
-        UpdateResult res = col.updateOne(filter, new Document("$set", update));
-        log.debug("Updated {} docs in {}", res.getModifiedCount(), collectionName);
-        return res.getModifiedCount();
+        String query = String.format("db.%s.updateOne(%s, %s)", collectionName, filter.toJson(), update.toJson());
+        List<Map<String, Object>> result = executeQuery(query);
+        Object modified = result.get(0).get("modified_count");
+        return modified == null ? 0 : ((Number) modified).longValue();
     }
 
     public long deleteOne(String collectionName, Document filter) {
-        MongoCollection<Document> col = mongoTemplate.getDb().getCollection(collectionName);
-        DeleteResult res = col.deleteOne(filter);
-        log.debug("Deleted {} docs from {}", res.getDeletedCount(), collectionName);
-        return res.getDeletedCount();
+        String query = String.format("db.%s.deleteOne(%s)", collectionName, filter.toJson());
+        List<Map<String, Object>> result = executeQuery(query);
+        Object deleted = result.get(0).get("deleted_count");
+        return deleted == null ? 0 : ((Number) deleted).longValue();
     }
 
     // ============================================================
-    // 7️⃣ COMPENSATION HELPERS (SAGA)
+    // 7️⃣ AI-BASED COMPENSATION HELPERS (SAGA)
     // ============================================================
     public Document findById(String collectionName, ObjectId id) {
-        return mongoTemplate.getDb().getCollection(collectionName).find(eq("_id", id)).first();
+        String query = String.format("db.%s.find({ _id: ObjectId('%s') })", collectionName, id.toHexString());
+        List<Map<String, Object>> result = executeQuery(query);
+        return result.isEmpty() ? null : new Document(result.get(0));
     }
 
     public long restoreOneById(String collectionName, ObjectId id, Document oldState) {
         if (oldState == null) return 0;
-        UpdateResult res = mongoTemplate.getDb()
-                .getCollection(collectionName)
-                .replaceOne(eq("_id", id), oldState);
-        log.info("Restored document _id={} in {}", id, collectionName);
-        return res.getModifiedCount();
+        String filter = String.format("{ _id: ObjectId('%s') }", id.toHexString());
+        String query = String.format("db.%s.updateOne(%s, %s)", collectionName, filter, oldState.toJson());
+        List<Map<String, Object>> result = executeQuery(query);
+        Object modified = result.get(0).get("modified_count");
+        log.info("AI-restore executed for _id={} in {}", id, collectionName);
+        return modified == null ? 0 : ((Number) modified).longValue();
     }
 }

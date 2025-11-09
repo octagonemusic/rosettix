@@ -71,7 +71,7 @@ public class PostgresStrategy implements QueryStrategy {
             "Given the PostgreSQL schema: \n%s\n---\n" +
             "Translate the question into a valid SQL query. " +
             "For read queries, use SELECT. " +
-            "If the intent is to insert or update data, generate a safe INSERT or UPDATE statement. " +
+            "If the intent is to insert, update, or delete data, generate a safe DML statement. " +
             "Avoid destructive operations like DROP, TRUNCATE, or ALTER.\n" +
             "Return only the SQL query (no markdown or explanation).\nQuestion: \"%s\"",
             schema, question
@@ -83,8 +83,8 @@ public class PostgresStrategy implements QueryStrategy {
         if (rawQuery == null) return "";
         String cleaned = rawQuery
                 .replace("```sql", "")
-                .replace("```", "")
                 .replace("```postgresql", "")
+                .replace("```", "")
                 .trim();
         return cleaned.replaceAll(";+\\s*$", "");
     }
@@ -101,7 +101,6 @@ public class PostgresStrategy implements QueryStrategy {
     public boolean isQuerySafe(String query) {
         if (query == null || query.isBlank()) return false;
         String lower = query.toLowerCase(Locale.ROOT);
-        // block multi-statements, comments, and unsafe keywords
         return !lower.contains(";")
                 && !lower.contains("--")
                 && !UNSAFE_PATTERN.matcher(lower).find();
@@ -142,54 +141,79 @@ public class PostgresStrategy implements QueryStrategy {
     }
 
     // ============================================================
-    // 5️⃣ SAFE WRITE OPERATIONS (FOR SAGA PATTERN)
+    // 5️⃣ AI-BASED SAFE WRITES (FOR SAGA)
     // ============================================================
-
-    /** Safe INSERT using parameter binding */
     public int insert(String table, Map<String, Object> values) {
         if (values == null || values.isEmpty())
             throw new IllegalArgumentException("values cannot be empty");
+
         String columns = String.join(", ", values.keySet());
-        String placeholders = String.join(", ", Collections.nCopies(values.size(), "?"));
-        String sql = "INSERT INTO " + table + " (" + columns + ") VALUES (" + placeholders + ")";
-        log.debug("Executing parameterized INSERT: {}", sql);
-        return jdbcTemplate.update(sql, values.values().toArray());
+        String valueLiterals = values.values().stream()
+                .map(v -> v instanceof String ? "'" + v + "'" : v.toString())
+                .collect(Collectors.joining(", "));
+
+        String query = String.format("INSERT INTO %s (%s) VALUES (%s)", table, columns, valueLiterals);
+        List<Map<String, Object>> result = executeQuery(query);
+        Object rows = result.get(0).get("rows_affected");
+        return rows == null ? 0 : ((Number) rows).intValue();
     }
 
-    /** Safe UPDATE using parameters */
-    public int update(String table, Map<String, Object> setValues, String whereClause, Object... whereArgs) {
+    public int update(String table, Map<String, Object> setValues, String whereClause) {
         if (setValues == null || setValues.isEmpty())
             throw new IllegalArgumentException("setValues cannot be empty");
 
-        String setSql = setValues.keySet().stream()
-            .map(k -> k + " = ?")
-            .collect(Collectors.joining(", "));
-        String sql = "UPDATE " + table + " SET " + setSql +
-            (whereClause == null || whereClause.isBlank() ? "" : " WHERE " + whereClause);
-        List<Object> params = new ArrayList<>(setValues.values());
-        if (whereArgs != null) params.addAll(Arrays.asList(whereArgs));
-        log.debug("Executing parameterized UPDATE: {}", sql);
-        return jdbcTemplate.update(sql, params.toArray());
+        String setSql = setValues.entrySet().stream()
+                .map(e -> e.getValue() instanceof String
+                        ? e.getKey() + " = '" + e.getValue() + "'"
+                        : e.getKey() + " = " + e.getValue())
+                .collect(Collectors.joining(", "));
+
+        String query = String.format("UPDATE %s SET %s%s",
+                table, setSql,
+                (whereClause == null || whereClause.isBlank()) ? "" : " WHERE " + whereClause);
+
+        List<Map<String, Object>> result = executeQuery(query);
+        Object rows = result.get(0).get("rows_affected");
+        return rows == null ? 0 : ((Number) rows).intValue();
     }
 
-    /** Safe DELETE using parameters */
-    public int delete(String table, String whereClause, Object... whereArgs) {
-        String sql = "DELETE FROM " + table +
-            (whereClause == null || whereClause.isBlank() ? "" : " WHERE " + whereClause);
-        log.debug("Executing parameterized DELETE: {}", sql);
-        return jdbcTemplate.update(sql, whereArgs);
+    public int delete(String table, String whereClause) {
+        String query = String.format("DELETE FROM %s%s",
+                table,
+                (whereClause == null || whereClause.isBlank()) ? "" : " WHERE " + whereClause);
+
+        List<Map<String, Object>> result = executeQuery(query);
+        Object rows = result.get(0).get("rows_affected");
+        return rows == null ? 0 : ((Number) rows).intValue();
     }
 
     // ============================================================
-    // 6️⃣ COMPENSATION HELPERS (SAGA SUPPORT)
+    // 6️⃣ AI-BASED COMPENSATION HELPERS (SAGA)
     // ============================================================
     public int deleteById(String table, String idColumn, Object idValue) {
-        log.debug("Compensating delete for {} id={}", table, idValue);
-        return delete(table, idColumn + " = ?", idValue);
+        String whereClause = idColumn + " = " + (idValue instanceof String ? "'" + idValue + "'" : idValue);
+        String query = String.format("DELETE FROM %s WHERE %s", table, whereClause);
+        log.debug("AI-compensating delete: {}", query);
+        List<Map<String, Object>> result = executeQuery(query);
+        Object rows = result.get(0).get("rows_affected");
+        return rows == null ? 0 : ((Number) rows).intValue();
     }
 
     public int updateById(String table, String idColumn, Object idValue, Map<String, Object> oldValues) {
-        log.debug("Compensating update for {} id={}", table, idValue);
-        return update(table, oldValues, idColumn + " = ?", idValue);
+        if (oldValues == null || oldValues.isEmpty())
+            throw new IllegalArgumentException("oldValues cannot be empty");
+
+        String setSql = oldValues.entrySet().stream()
+                .map(e -> e.getValue() instanceof String
+                        ? e.getKey() + " = '" + e.getValue() + "'"
+                        : e.getKey() + " = " + e.getValue())
+                .collect(Collectors.joining(", "));
+
+        String whereClause = idColumn + " = " + (idValue instanceof String ? "'" + idValue + "'" : idValue);
+        String query = String.format("UPDATE %s SET %s WHERE %s", table, setSql, whereClause);
+        log.debug("AI-compensating update: {}", query);
+        List<Map<String, Object>> result = executeQuery(query);
+        Object rows = result.get(0).get("rows_affected");
+        return rows == null ? 0 : ((Number) rows).intValue();
     }
 }
