@@ -1,0 +1,20 @@
+# Node modules
+node_modules/
+dist/
+
+# Frontend build output
+dist/
+**/dist/
+
+# Frontend dependencies
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+
