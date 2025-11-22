@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rosettix</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="chat-app minimal">
+      <header class="chat-header" role="banner">
+        <h1 class="logo center">Rosettix</h1>
+        <div class="header-icons">
+          <div class="strategy-dropdown" id="strategyDropdown" aria-haspopup="listbox" aria-expanded="false">
+            <button type="button" id="strategyButton" class="strategy-button" aria-label="Select database strategy" title="Select database strategy">
+              <img src="/assets/mongodb.svg" alt="" class="logo" />
+              <span class="label" id="strategyLabel">MongoDB</span>
+              <span class="chevron" aria-hidden="true">▾</span>
+            </button>
+            <ul class="strategy-menu" id="strategyMenu" role="listbox" aria-label="Database strategy">
+              <li role="option" data-value="mongodb" aria-selected="true">
+                <img src="/assets/mongodb.svg" alt="" class="logo" />
+                <span>MongoDB</span>
+              </li>
+              <li role="option" data-value="postgres" aria-selected="false">
+                <img src="/assets/postgres.svg" alt="" class="logo" />
+                <span>Postgres</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </header>
+      <main class="chat-main" role="main">
+        <div class="conversation fullwidth">
+          <ul id="messages" class="messages" aria-live="polite" aria-label="Conversation"></ul>
+        </div>
+      </main>
+      <div class="composer minimal-bar" role="form">
+        <!-- Step Builder for write mode -->
+        <div id="stepBuilder" class="step-builder hidden">
+          <div class="step-builder-header">
+            <span class="step-count">Steps: <span id="stepCount">0</span>/10</span>
+            <button type="button" id="addStepBtn" class="add-step-btn" title="Add step">+ Add Step</button>
+          </div>
+          <div id="stepsList" class="steps-list"></div>
+        </div>
+        
+        <div class="input-pill" id="inputPill">
+          <textarea id="question" placeholder="type your message here" rows="1" aria-label="Message input"></textarea>
+          <div class="pill-icons">
+            <button id="modeToggle" class="pill-icon mode-toggle" data-mode="read" title="Mode: read (click to switch)" aria-label="Mode: read">
+              <!-- Book icon (read) -->
+              <svg class="mode-icon read" aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+                <path fill="currentColor" d="M4 4.75C4 3.784 4.784 3 5.75 3h6.5c.966 0 1.75.784 1.75 1.75V20c0-.966-.784-1.75-1.75-1.75h-6.5A1.75 1.75 0 0 0 4 20V4.75Zm10 0C14 3.784 14.784 3 15.75 3h2.5A1.75 1.75 0 0 1 20 4.75V20c0-.966-.784-1.75-1.75-1.75h-2.5A1.75 1.75 0 0 0 14 20V4.75Z" />
+                <path fill="currentColor" d="M5.75 5.5h6.5v1h-6.5zm10-1h2.5v1h-2.5z" opacity="0.55" />
+              </svg>
+              <!-- Pencil icon (write) -->
+              <svg class="mode-icon write" aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+                <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25Z" />
+                <path fill="currentColor" d="M20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83Z" />
+              </svg>
+              <span class="knob"></span>
+            </button>
+            <button class="pill-icon send" id="btnSubmit" aria-label="Send">➤</button>
+          </div>
+        </div>
+        <!-- Removed hiddenControls; inline strategy toggle now handled by brain icon -->
+      </div>
+    </div>
+    <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+    <div id="loadingOverlay" class="loading-overlay hidden"><div class="spinner"></div><span>Thinking…</span></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
