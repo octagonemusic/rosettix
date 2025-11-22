@@ -2,13 +2,19 @@ package com.rosettix.api.service;
 
 import com.rosettix.api.config.RosettixConfiguration;
 import com.rosettix.api.exception.QueryException;
+import com.rosettix.api.saga.Saga;
+import com.rosettix.api.saga.SagaOrchestrator;
+import com.rosettix.api.saga.SagaStep;
 import com.rosettix.api.strategy.QueryStrategy;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
 
 @Service
 @RequiredArgsConstructor
@@ -16,162 +22,200 @@ import org.springframework.stereotype.Service;
 public class OrchestratorService {
 
     private final LlmService llmService;
-    private final Map<String, QueryStrategy> strategies; // Spring will inject all strategies here
+    private final Map<String, QueryStrategy> strategies; // Spring auto-injects all @Component strategies
     private final RosettixConfiguration rosettixConfiguration;
+    @Autowired
+    private SagaOrchestrator sagaOrchestrator;
 
+    // ============================================================
+    // 1️⃣ READ-ONLY QUERIES (Handled by /api/query)
+    // ============================================================
     public List<Map<String, Object>> processQuery(String question) {
-        // Use the configured default strategy
-        return processQuery(
-            question,
-            rosettixConfiguration.getDefaultStrategy()
-        );
+        return processQuery(question, rosettixConfiguration.getDefaultStrategy());
     }
 
-    public List<Map<String, Object>> processQuery(
-        String question,
-        String strategyName
-    ) {
+    public List<Map<String, Object>> processQuery(String question, String strategyName) {
         QueryStrategy strategy = strategies.get(strategyName);
 
         if (strategy == null) {
             log.error("No strategy found for: {}", strategyName);
             throw new QueryException(
-                "Unsupported database strategy: " + strategyName,
-                strategyName,
-                QueryException.ErrorType.STRATEGY_NOT_FOUND
+                    "Unsupported database strategy: " + strategyName,
+                    strategyName,
+                    QueryException.ErrorType.STRATEGY_NOT_FOUND
             );
         }
 
-        log.info(
-            "Processing query with strategy: {}",
-            strategy.getStrategyName()
-        );
+        log.info("Processing READ query with strategy: {}", strategy.getStrategyName());
 
+        // 🔹 Generate and clean query
         String generatedQuery = llmService.generateQuery(question, strategy);
+        String cleanedQuery = strategy.cleanQuery(generatedQuery);
 
-        if (!strategy.isQuerySafe(generatedQuery)) {
-            log.warn("Generated query failed safety check: {}", generatedQuery);
+        // 🔹 Validate basic query safety
+        if (!strategy.isQuerySafe(cleanedQuery)) {
+            log.warn("Generated query failed safety check: {}", cleanedQuery);
             throw new QueryException(
-                "Generated query is not safe to execute",
-                strategyName,
-                generatedQuery,
-                QueryException.ErrorType.UNSAFE_QUERY
+                    "Generated query is not safe to execute",
+                    strategyName,
+                    cleanedQuery,
+                    QueryException.ErrorType.UNSAFE_QUERY
+            );
+        }
+
+        // 🔒 Strict read-only enforcement
+        String lower = cleanedQuery.toLowerCase();
+        boolean isReadQuery =
+                lower.startsWith("select") ||
+                lower.contains(".find(") ||
+                lower.contains(".count(");
+
+        if (!isReadQuery) {
+            log.warn("❌ Blocked non-read query on /api/query: {}", cleanedQuery);
+            throw new QueryException(
+                    "Only read operations (SELECT/find/count) are allowed on this endpoint. " +
+                    "Use /api/query/write for insert, update, or delete queries.",
+                    strategyName,
+                    cleanedQuery,
+                    QueryException.ErrorType.UNSUPPORTED_OPERATION
             );
         }
 
         try {
-            log.info("Executing query: {}", generatedQuery);
-            return strategy.executeQuery(generatedQuery);
-        } catch (IllegalArgumentException e) {
-            log.error(
-                "Query parsing error with strategy {}: {}",
-                strategyName,
-                e.getMessage(),
-                e
-            );
-            throw new QueryException(
-                "Query parsing error: " + e.getMessage(),
-                strategyName,
-                generatedQuery,
-                QueryException.ErrorType.PARSING_ERROR,
-                e
-            );
-        } catch (com.mongodb.MongoException e) {
-            log.error(
-                "MongoDB database error with strategy {}: {}",
-                strategyName,
-                e.getMessage(),
-                e
-            );
-            throw new QueryException(
-                "Database connection error: " + e.getMessage(),
-                strategyName,
-                generatedQuery,
-                QueryException.ErrorType.DATABASE_CONNECTION_ERROR,
-                e
-            );
-        } catch (org.bson.json.JsonParseException e) {
-            log.error(
-                "JSON parsing error with strategy {}: {}",
-                strategyName,
-                e.getMessage(),
-                e
-            );
-            throw new QueryException(
-                "Query filter parsing error: " + e.getMessage(),
-                strategyName,
-                generatedQuery,
-                QueryException.ErrorType.PARSING_ERROR,
-                e
-            );
+            log.info("Executing read query: {}", cleanedQuery);
+            return strategy.executeQuery(cleanedQuery);
         } catch (RuntimeException e) {
-            // Check if it's a wrapped database/parsing error
-            String message = e.getMessage();
-            if (message.contains("MongoDB") || message.contains("Database")) {
-                log.error(
-                    "Runtime database error with strategy {}: {}",
+            handleRuntimeError(e, strategyName, cleanedQuery);
+            return List.of();
+        } catch (Exception e) {
+            log.error("Unexpected error executing query with strategy {}: {}", strategyName, e.getMessage(), e);
+            throw new QueryException(
+                    "Unexpected execution error: " + e.getMessage(),
                     strategyName,
-                    e.getMessage(),
-                    e
-                );
-                throw new QueryException(
-                    e.getMessage(),
-                    strategyName,
-                    generatedQuery,
-                    QueryException.ErrorType.DATABASE_CONNECTION_ERROR,
-                    e
-                );
-            } else if (
-                message.contains("parse") ||
-                message.contains("Parse") ||
-                message.contains("JSON")
-            ) {
-                log.error(
-                    "Runtime parsing error with strategy {}: {}",
-                    strategyName,
-                    e.getMessage(),
-                    e
-                );
-                throw new QueryException(
-                    e.getMessage(),
-                    strategyName,
-                    generatedQuery,
-                    QueryException.ErrorType.PARSING_ERROR,
-                    e
-                );
-            } else {
-                log.error(
-                    "Runtime execution error with strategy {}: {}",
-                    strategyName,
-                    e.getMessage(),
-                    e
-                );
-                throw new QueryException(
-                    e.getMessage(),
-                    strategyName,
-                    generatedQuery,
+                    cleanedQuery,
                     QueryException.ErrorType.EXECUTION_ERROR,
                     e
-                );
-            }
-        } catch (Exception e) {
-            log.error(
-                "Unexpected error executing query with strategy {}: {}",
-                strategyName,
-                e.getMessage(),
-                e
-            );
-            throw new QueryException(
-                "Unexpected execution error: " + e.getMessage(),
-                strategyName,
-                generatedQuery,
-                QueryException.ErrorType.EXECUTION_ERROR,
-                e
             );
         }
     }
 
+    // ============================================================
+    // 2️⃣ WRITE QUERIES (Handled by /api/query/write)
+    // ============================================================
+    public List<Map<String, Object>> processWriteQuery(String question, String strategyName) {
+        QueryStrategy strategy = strategies.get(strategyName);
+
+        if (strategy == null) {
+            log.error("No strategy found for: {}", strategyName);
+            throw new QueryException(
+                    "Unsupported database strategy: " + strategyName,
+                    strategyName,
+                    QueryException.ErrorType.STRATEGY_NOT_FOUND
+            );
+        }
+
+        log.info("Processing WRITE query with strategy: {}", strategy.getStrategyName());
+
+        try {
+            // 🔹 Use same generation pipeline for consistency
+            String generatedQuery = llmService.generateQuery(question, strategy);
+            String cleanedQuery = strategy.cleanQuery(generatedQuery);
+
+            log.info("Generated write query: {}", cleanedQuery);
+
+            // 🔹 Safety validation
+            if (!strategy.isQuerySafe(cleanedQuery)) {
+                throw new QueryException(
+                        "Unsafe write query detected: " + cleanedQuery,
+                        strategyName,
+                        cleanedQuery,
+                        QueryException.ErrorType.UNSAFE_QUERY
+                );
+            }
+
+            // 🔒 Only allow write operations
+            String lower = cleanedQuery.toLowerCase();
+            boolean isWriteQuery =
+                    lower.contains("insert") ||
+                    lower.contains("update") ||
+                    lower.contains("delete") ||
+                    lower.contains(".insertone(") ||
+                    lower.contains(".updateone(") ||
+                    lower.contains(".deleteone(");
+
+            if (!isWriteQuery) {
+                log.warn("❌ Blocked non-write query on /api/query/write: {}", cleanedQuery);
+                throw new QueryException(
+                        "Only INSERT, UPDATE, or DELETE operations are allowed on this endpoint. " +
+                        "Use /api/query for read operations.",
+                        strategyName,
+                        cleanedQuery,
+                        QueryException.ErrorType.UNSUPPORTED_OPERATION
+                );
+            }
+
+            // ✅ Execute the write query safely
+            return strategy.executeQuery(cleanedQuery);
+
+        } catch (RuntimeException e) {
+            handleRuntimeError(e, strategyName, question);
+            return List.of();
+        } catch (Exception e) {
+            log.error("Unexpected error executing write query: {}", e.getMessage(), e);
+            throw new QueryException(
+                    "Unexpected execution error: " + e.getMessage(),
+                    strategyName,
+                    question,
+                    QueryException.ErrorType.EXECUTION_ERROR,
+                    e
+            );
+        }
+    }
+
+    // ============================================================
+    // 3️⃣ CENTRALIZED RUNTIME ERROR HANDLER
+    // ============================================================
+    private void handleRuntimeError(RuntimeException e, String strategyName, String query) {
+        String message = e.getMessage();
+        if (message == null) message = "Unknown runtime error";
+
+        if (message.contains("MongoDB") || message.contains("Database")) {
+            throw new QueryException(
+                    "Database connection error: " + message,
+                    strategyName,
+                    query,
+                    QueryException.ErrorType.DATABASE_CONNECTION_ERROR,
+                    e
+            );
+        } else if (message.contains("parse") || message.contains("JSON")) {
+            throw new QueryException(
+                    "Query parsing error: " + message,
+                    strategyName,
+                    query,
+                    QueryException.ErrorType.PARSING_ERROR,
+                    e
+            );
+        } else {
+            throw new QueryException(
+                    "Execution error: " + message,
+                    strategyName,
+                    query,
+                    QueryException.ErrorType.EXECUTION_ERROR,
+                    e
+            );
+        }
+    }
+
+    // ============================================================
+    // 4️⃣ STRATEGY ENUMERATION
+    // ============================================================
     public Set<String> getAvailableStrategies() {
         return strategies.keySet();
+    }
+
+    public List<Map<String, Object>> processSaga(List<SagaStep> steps, boolean isWrite) {
+        Saga saga = new Saga();
+        steps.forEach(saga::addStep);
+        return sagaOrchestrator.executeSaga(saga, isWrite);
     }
 }
