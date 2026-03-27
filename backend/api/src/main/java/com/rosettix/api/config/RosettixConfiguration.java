@@ -27,6 +27,11 @@ public class RosettixConfiguration {
      */
     private LlmConfig llm = new LlmConfig();
 
+    /**
+     * Schema cache configuration settings
+     */
+    private SchemaCacheConfig schemaCache = new SchemaCacheConfig();
+
     @Data
     public static class QueryConfig {
         /**
@@ -61,5 +66,18 @@ public class RosettixConfiguration {
          * Timeout for LLM calls in seconds
          */
         private int timeoutSeconds = 30;
+    }
+
+    @Data
+    public static class SchemaCacheConfig {
+        /**
+         * Whether schema caching is enabled
+         */
+        private boolean enabled = true;
+
+        /**
+         * Schema cache TTL in minutes
+         */
+        private long ttlMinutes = 5;
     }
 }

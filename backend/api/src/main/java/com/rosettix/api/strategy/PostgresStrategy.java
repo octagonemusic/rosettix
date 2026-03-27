@@ -1,5 +1,7 @@
 package com.rosettix.api.strategy;
 
+import com.rosettix.api.service.SchemaCacheService;
+
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -16,12 +18,17 @@ import org.springframework.stereotype.Component;
 public class PostgresStrategy implements QueryStrategy {
 
     private final JdbcTemplate jdbcTemplate;
+    private final SchemaCacheService schemaCacheService;
 
     // ============================================================
     // 1️⃣ SCHEMA AND INTROSPECTION
     // ============================================================
     @Override
     public String getSchemaRepresentation() {
+        return schemaCacheService.getSchema(getStrategyName(), this::fetchSchemaRepresentation);
+    }
+
+    private String fetchSchemaRepresentation() {
         try {
             String sql = """
                 SELECT table_name, column_name, data_type 
