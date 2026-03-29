@@ -3,6 +3,7 @@ package com.rosettix.api.strategy;
 import com.mongodb.client.MongoIterable;
 import com.mongodb.client.result.DeleteResult;
 import com.mongodb.client.result.UpdateResult;
+import com.rosettix.api.service.SchemaCacheService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.bson.Document;
@@ -21,12 +22,17 @@ import static com.mongodb.client.model.Filters.eq;
 public class MongoStrategy implements QueryStrategy {
 
     private final MongoTemplate mongoTemplate;
+    private final SchemaCacheService schemaCacheService;
 
     // ============================================================
     // 1️⃣ SCHEMA INTROSPECTION
     // ============================================================
     @Override
     public String getSchemaRepresentation() {
+        return schemaCacheService.getSchema(getStrategyName(), this::fetchSchemaRepresentation);
+    }
+
+    private String fetchSchemaRepresentation() {
         try {
             StringBuilder schemaBuilder = new StringBuilder();
             MongoIterable<String> collections = mongoTemplate.getDb().listCollectionNames();
