@@ -6,7 +6,14 @@ import org.junit.jupiter.api.Test;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -122,6 +129,52 @@ class SchemaCacheServiceTest {
         assertTrue((Double) postgres.get("avg_miss_ms") > 0.0);
         assertTrue((Double) postgres.get("avg_hit_ms") >= 0.0);
         assertNotNull(postgres.get("estimated_latency_reduction_percent"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void deduplicatesConcurrentLoadsForSameKey() throws Exception {
+        RosettixConfiguration configuration = configuration(true, 5);
+        MutableClock clock = new MutableClock(Instant.parse("2026-03-27T10:00:00Z"));
+        SchemaCacheService cacheService = new SchemaCacheService(configuration, clock);
+        AtomicInteger loaderCalls = new AtomicInteger();
+        int callers = 10;
+        ExecutorService executor = Executors.newFixedThreadPool(callers);
+
+        try {
+            CountDownLatch ready = new CountDownLatch(callers);
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<String>> futures = new ArrayList<>();
+
+            for (int i = 0; i < callers; i++) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    assertTrue(start.await(5, TimeUnit.SECONDS));
+                    return cacheService.getSchema("postgres", () -> {
+                        loaderCalls.incrementAndGet();
+                        sleep(50);
+                        return "shared-schema";
+                    });
+                }));
+            }
+
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+
+            for (Future<String> future : futures) {
+                assertEquals("shared-schema", future.get(5, TimeUnit.SECONDS));
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+
+        Map<String, Object> snapshot = cacheService.getMetricsSnapshot();
+        Map<String, Object> databases = (Map<String, Object>) snapshot.get("databases");
+        Map<String, Object> postgres = (Map<String, Object>) databases.get("postgres");
+
+        assertEquals(1, loaderCalls.get());
+        assertEquals(1L, postgres.get("cache_misses"));
+        assertEquals(9L, postgres.get("in_flight_waits"));
     }
 
     private RosettixConfiguration configuration(boolean enabled, long ttlMinutes) {
