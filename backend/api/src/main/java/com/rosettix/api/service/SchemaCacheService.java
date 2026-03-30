@@ -11,6 +11,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Supplier;
@@ -22,6 +24,7 @@ public class SchemaCacheService {
     private final RosettixConfiguration configuration;
     private final Clock clock;
     private final Map<String, CachedSchema> schemaCache = new ConcurrentHashMap<>();
+    private final Map<String, CompletableFuture<String>> inFlightLoads = new ConcurrentHashMap<>();
     private final Map<String, SchemaCacheStats> metrics = new ConcurrentHashMap<>();
 
     @Autowired
@@ -54,16 +57,42 @@ public class SchemaCacheService {
             return cachedSchema.schema();
         }
 
-        log.info("Cache miss, fetching schema: {}", key);
-        String schema = loader.get();
-        schemaCache.put(key, new CachedSchema(schema, Instant.now(clock)));
-        SchemaCacheStats stats = getStats(key);
-        stats.recordMiss(System.nanoTime() - startNanos);
-        Double latencyReduction = stats.getEstimatedLatencyReductionPercent();
-        if (latencyReduction != null) {
-            log.info("Schema caching reduced latency by {}% for {}", formatReduction(latencyReduction), key);
+        CompletableFuture<String> newLoad = new CompletableFuture<>();
+        CompletableFuture<String> inFlightLoad = inFlightLoads.putIfAbsent(key, newLoad);
+
+        if (inFlightLoad == null) {
+            try {
+                log.info("Cache miss, fetching schema: {}", key);
+                String schema = loader.get();
+                schemaCache.put(key, new CachedSchema(schema, Instant.now(clock)));
+                SchemaCacheStats stats = getStats(key);
+                stats.recordMiss(System.nanoTime() - startNanos);
+                Double latencyReduction = stats.getEstimatedLatencyReductionPercent();
+                if (latencyReduction != null) {
+                    log.info("Schema caching reduced latency by {}% for {}", formatReduction(latencyReduction), key);
+                }
+                newLoad.complete(schema);
+                return schema;
+            } catch (Exception e) {
+                newLoad.completeExceptionally(e);
+                throw e;
+            } finally {
+                inFlightLoads.remove(key, newLoad);
+            }
         }
-        return schema;
+
+        try {
+            log.info("Schema load already in flight, waiting for existing fetch: {}", key);
+            String schema = inFlightLoad.join();
+            getStats(key).recordInFlightWait(System.nanoTime() - startNanos);
+            return schema;
+        } catch (CompletionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new RuntimeException("Schema load failed for " + key, cause);
+        }
     }
 
     public Map<String, Object> getMetricsSnapshot() {
@@ -109,9 +138,11 @@ public class SchemaCacheService {
         private final LongAdder hits = new LongAdder();
         private final LongAdder misses = new LongAdder();
         private final LongAdder bypasses = new LongAdder();
+        private final LongAdder inFlightWaits = new LongAdder();
         private final LongAdder totalHitNanos = new LongAdder();
         private final LongAdder totalMissNanos = new LongAdder();
         private final LongAdder totalBypassNanos = new LongAdder();
+        private final LongAdder totalInFlightWaitNanos = new LongAdder();
 
         void recordHit(long elapsedNanos) {
             hits.increment();
@@ -128,13 +159,20 @@ public class SchemaCacheService {
             totalBypassNanos.add(elapsedNanos);
         }
 
+        void recordInFlightWait(long elapsedNanos) {
+            inFlightWaits.increment();
+            totalInFlightWaitNanos.add(elapsedNanos);
+        }
+
         void mergeFrom(SchemaCacheStats other) {
             hits.add(other.hits.sum());
             misses.add(other.misses.sum());
             bypasses.add(other.bypasses.sum());
+            inFlightWaits.add(other.inFlightWaits.sum());
             totalHitNanos.add(other.totalHitNanos.sum());
             totalMissNanos.add(other.totalMissNanos.sum());
             totalBypassNanos.add(other.totalBypassNanos.sum());
+            totalInFlightWaitNanos.add(other.totalInFlightWaitNanos.sum());
         }
 
         Map<String, Object> toSnapshot() {
@@ -142,9 +180,11 @@ public class SchemaCacheService {
             snapshot.put("cache_hits", hits.sum());
             snapshot.put("cache_misses", misses.sum());
             snapshot.put("cache_bypasses", bypasses.sum());
+            snapshot.put("in_flight_waits", inFlightWaits.sum());
             snapshot.put("avg_hit_ms", nanosToMillis(totalHitNanos.sum(), hits.sum()));
             snapshot.put("avg_miss_ms", nanosToMillis(totalMissNanos.sum(), misses.sum()));
             snapshot.put("avg_bypass_ms", nanosToMillis(totalBypassNanos.sum(), bypasses.sum()));
+            snapshot.put("avg_in_flight_wait_ms", nanosToMillis(totalInFlightWaitNanos.sum(), inFlightWaits.sum()));
             snapshot.put("estimated_latency_reduction_percent", getEstimatedLatencyReductionPercent());
             return snapshot;
         }
