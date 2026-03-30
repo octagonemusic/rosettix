@@ -5,7 +5,7 @@ Simple TypeScript frontend to call your backend endpoints with a Vite dev server
 ## Endpoints wired
 - Read: `POST /api/query` with `{ question, database }`
 - Write: `POST /api/query/write` with `{ question, database }`
-- Strategies: `GET /api/query/strategies` (fallback to `postgres`, `mongodb` if it fails)
+- Strategies: `GET /api/query/strategies` (fallback to `postgres`, `mongodb`, `cassandra` if it fails)
 - Health: `GET /health` and `GET /health/database`
 
 ## Run (Windows PowerShell)

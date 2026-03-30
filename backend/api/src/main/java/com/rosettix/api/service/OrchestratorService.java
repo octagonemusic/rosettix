@@ -5,6 +5,7 @@ import com.rosettix.api.exception.QueryException;
 import com.rosettix.api.saga.Saga;
 import com.rosettix.api.saga.SagaOrchestrator;
 import com.rosettix.api.saga.SagaStep;
+import com.rosettix.api.strategy.CassandraStrategy;
 import com.rosettix.api.strategy.QueryStrategy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -13,6 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -35,13 +37,14 @@ public class OrchestratorService {
     }
 
     public List<Map<String, Object>> processQuery(String question, String strategyName) {
-        QueryStrategy strategy = strategies.get(strategyName);
+        String normalizedStrategyName = normalizeStrategyName(strategyName);
+        QueryStrategy strategy = strategies.get(normalizedStrategyName);
 
         if (strategy == null) {
             log.error("No strategy found for: {}", strategyName);
             throw new QueryException(
                     "Unsupported database strategy: " + strategyName,
-                    strategyName,
+                    normalizedStrategyName,
                     QueryException.ErrorType.STRATEGY_NOT_FOUND
             );
         }
@@ -57,7 +60,7 @@ public class OrchestratorService {
             log.warn("Generated query failed safety check: {}", cleanedQuery);
             throw new QueryException(
                     "Generated query is not safe to execute",
-                    strategyName,
+                    normalizedStrategyName,
                     cleanedQuery,
                     QueryException.ErrorType.UNSAFE_QUERY
             );
@@ -75,7 +78,7 @@ public class OrchestratorService {
             throw new QueryException(
                     "Only read operations (SELECT/find/count) are allowed on this endpoint. " +
                     "Use /api/query/write for insert, update, or delete queries.",
-                    strategyName,
+                    normalizedStrategyName,
                     cleanedQuery,
                     QueryException.ErrorType.UNSUPPORTED_OPERATION
             );
@@ -83,15 +86,15 @@ public class OrchestratorService {
 
         try {
             log.info("Executing read query: {}", cleanedQuery);
-            return strategy.executeQuery(cleanedQuery);
+            return attachExecutedQueryMetadata(strategy.executeQuery(cleanedQuery), cleanedQuery);
         } catch (RuntimeException e) {
-            handleRuntimeError(e, strategyName, cleanedQuery);
+            handleRuntimeError(e, normalizedStrategyName, cleanedQuery);
             return List.of();
         } catch (Exception e) {
-            log.error("Unexpected error executing query with strategy {}: {}", strategyName, e.getMessage(), e);
+            log.error("Unexpected error executing query with strategy {}: {}", normalizedStrategyName, e.getMessage(), e);
             throw new QueryException(
                     "Unexpected execution error: " + e.getMessage(),
-                    strategyName,
+                    normalizedStrategyName,
                     cleanedQuery,
                     QueryException.ErrorType.EXECUTION_ERROR,
                     e
@@ -103,13 +106,14 @@ public class OrchestratorService {
     // 2️⃣ WRITE QUERIES (Handled by /api/query/write)
     // ============================================================
     public List<Map<String, Object>> processWriteQuery(String question, String strategyName) {
-        QueryStrategy strategy = strategies.get(strategyName);
+        String normalizedStrategyName = normalizeStrategyName(strategyName);
+        QueryStrategy strategy = strategies.get(normalizedStrategyName);
 
         if (strategy == null) {
             log.error("No strategy found for: {}", strategyName);
             throw new QueryException(
                     "Unsupported database strategy: " + strategyName,
-                    strategyName,
+                    normalizedStrategyName,
                     QueryException.ErrorType.STRATEGY_NOT_FOUND
             );
         }
@@ -120,6 +124,7 @@ public class OrchestratorService {
             // 🔹 Use same generation pipeline for consistency
             String generatedQuery = llmService.generateQuery(question, strategy);
             String cleanedQuery = strategy.cleanQuery(generatedQuery);
+            cleanedQuery = adaptWriteQueryIfNeeded(question, strategy, cleanedQuery);
 
             log.info("Generated write query: {}", cleanedQuery);
 
@@ -127,7 +132,7 @@ public class OrchestratorService {
             if (!strategy.isQuerySafe(cleanedQuery)) {
                 throw new QueryException(
                         "Unsafe write query detected: " + cleanedQuery,
-                        strategyName,
+                        normalizedStrategyName,
                         cleanedQuery,
                         QueryException.ErrorType.UNSAFE_QUERY
                 );
@@ -148,23 +153,23 @@ public class OrchestratorService {
                 throw new QueryException(
                         "Only INSERT, UPDATE, or DELETE operations are allowed on this endpoint. " +
                         "Use /api/query for read operations.",
-                        strategyName,
+                        normalizedStrategyName,
                         cleanedQuery,
                         QueryException.ErrorType.UNSUPPORTED_OPERATION
                 );
             }
 
             // ✅ Execute the write query safely
-            return strategy.executeQuery(cleanedQuery);
+            return attachExecutedQueryMetadata(strategy.executeQuery(cleanedQuery), cleanedQuery);
 
         } catch (RuntimeException e) {
-            handleRuntimeError(e, strategyName, question);
+            handleRuntimeError(e, normalizedStrategyName, question);
             return List.of();
         } catch (Exception e) {
             log.error("Unexpected error executing write query: {}", e.getMessage(), e);
             throw new QueryException(
                     "Unexpected execution error: " + e.getMessage(),
-                    strategyName,
+                    normalizedStrategyName,
                     question,
                     QueryException.ErrorType.EXECUTION_ERROR,
                     e
@@ -217,5 +222,35 @@ public class OrchestratorService {
         Saga saga = new Saga();
         steps.forEach(saga::addStep);
         return sagaOrchestrator.executeSaga(saga, isWrite);
+    }
+
+    private String normalizeStrategyName(String strategyName) {
+        if (strategyName == null) {
+            return rosettixConfiguration.getDefaultStrategy().toLowerCase(Locale.ROOT);
+        }
+        return strategyName.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String adaptWriteQueryIfNeeded(String question, QueryStrategy strategy, String query) {
+        if (strategy instanceof CassandraStrategy cassandraStrategy) {
+            return cassandraStrategy.adaptWriteQuery(question, query);
+        }
+        return query;
+    }
+
+    private List<Map<String, Object>> attachExecutedQueryMetadata(List<Map<String, Object>> results, String executedQuery) {
+        List<Map<String, Object>> normalizedResults = results == null ? List.of() : results;
+        if (normalizedResults.isEmpty()) {
+            return List.of(Map.of("_executed_query", executedQuery));
+        }
+
+        return normalizedResults.stream()
+                .map(row -> {
+                    java.util.LinkedHashMap<String, Object> copy = new java.util.LinkedHashMap<>(row);
+                    copy.put("_executed_query", executedQuery);
+                    return copy;
+                })
+                .map(row -> (Map<String, Object>) row)
+                .toList();
     }
 }

@@ -35,6 +35,10 @@ public class GlobalExceptionHandler {
             response.put("strategy", ex.getStrategyName());
         }
 
+        if (ex.getGeneratedQuery() != null) {
+            response.put("generatedQuery", ex.getGeneratedQuery());
+        }
+
         HttpStatus status = mapErrorTypeToHttpStatus(ex.getErrorType());
         response.put("status", status.value());
 
@@ -130,9 +134,12 @@ public class GlobalExceptionHandler {
     ) {
         switch (errorType) {
             case STRATEGY_NOT_FOUND:
+            case UNSUPPORTED_OPERATION:
                 return HttpStatus.BAD_REQUEST;
             case UNSAFE_QUERY:
                 return HttpStatus.FORBIDDEN;
+            case RATE_LIMITED:
+                return HttpStatus.TOO_MANY_REQUESTS;
             case EXECUTION_ERROR:
             case PARSING_ERROR:
                 return HttpStatus.BAD_REQUEST;

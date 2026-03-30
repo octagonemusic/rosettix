@@ -28,9 +28,9 @@ public class RosettixConfiguration {
     private LlmConfig llm = new LlmConfig();
 
     /**
-     * Schema cache configuration settings
+     * Cassandra-specific guardrails
      */
-    private SchemaCacheConfig schemaCache = new SchemaCacheConfig();
+    private CassandraConfig cassandra = new CassandraConfig();
 
     @Data
     public static class QueryConfig {
@@ -69,15 +69,10 @@ public class RosettixConfiguration {
     }
 
     @Data
-    public static class SchemaCacheConfig {
+    public static class CassandraConfig {
         /**
-         * Whether schema caching is enabled
+         * Maximum number of rows a single Cassandra mutation may affect.
          */
-        private boolean enabled = true;
-
-        /**
-         * Schema cache TTL in minutes
-         */
-        private long ttlMinutes = 5;
+        private int maxMutationRows = 100;
     }
 }

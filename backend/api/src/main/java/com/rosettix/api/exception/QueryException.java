@@ -22,6 +22,7 @@ public class QueryException extends RuntimeException {
         DATABASE_CONNECTION_ERROR,
         EXECUTION_ERROR,
         LLM_ERROR,
+        RATE_LIMITED,
         UNSUPPORTED_OPERATION
     }
 

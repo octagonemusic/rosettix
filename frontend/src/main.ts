@@ -1,5 +1,15 @@
 type StrategyResponse = { available_strategies?: string[]; default_strategy?: string };
 type ApiResult = { results?: any[]; mode?: string } & Record<string, any>;
+type Strategy = 'postgres' | 'mongodb' | 'cassandra';
+type ManualStep = { id: number; question: string; database: Strategy };
+
+const STRATEGY_META: Record<Strategy, { label: string; icon: string }> = {
+  mongodb: { label: 'MongoDB', icon: 'mongodb' },
+  postgres: { label: 'Postgres', icon: 'postgres' },
+  cassandra: { label: 'Cassandra', icon: 'cassandra' },
+};
+
+const VALID_STRATEGIES: Strategy[] = ['mongodb', 'postgres', 'cassandra'];
 
 const els = {
   question: document.getElementById('question') as HTMLTextAreaElement,
@@ -13,6 +23,9 @@ const els = {
   strategyButton: document.getElementById('strategyButton') as HTMLButtonElement,
   strategyMenu: document.getElementById('strategyMenu') as HTMLUListElement,
   strategyLabel: document.getElementById('strategyLabel') as HTMLSpanElement,
+  modeBadge: document.getElementById('modeBadge') as HTMLSpanElement,
+  modeHint: document.getElementById('modeHint') as HTMLParagraphElement,
+  stepsToggle: document.getElementById('stepsToggle') as HTMLButtonElement,
   stepBuilder: document.getElementById('stepBuilder') as HTMLDivElement,
   stepsList: document.getElementById('stepsList') as HTMLDivElement,
   addStepBtn: document.getElementById('addStepBtn') as HTMLButtonElement,
@@ -20,9 +33,11 @@ const els = {
 };
 
 let currentMode: 'read' | 'write' = 'read';
-let currentStrategy: 'postgres' | 'mongodb' = 'mongodb';
-let manualSteps: Array<{ id: number; question: string; database: 'mongodb' | 'postgres' }> = [];
+let currentStrategy: Strategy = 'mongodb';
+let manualSteps: ManualStep[] = [];
+let isStepBuilderOpen = false;
 let stepIdCounter = 0;
+let responseInspectorId = 0;
 // Enhanced chat logic: avatars, typing indicator, timestamps.
 
 function getMode(): 'read' | 'write' { return currentMode; }
@@ -33,13 +48,13 @@ function clearChat() {
 
 function addMessage(role: 'user' | 'assistant', content: string, opts: { html?: boolean; typing?: boolean; error?: boolean } = {}) {
   const li = document.createElement('li');
-  li.className = 'message';
+  li.className = `message ${role}`;
   const row = document.createElement('div');
-  row.className = 'row ' + (role === 'assistant' ? 'assistant' : 'user');
+  row.className = `row ${role}`;
   const dot = document.createElement('div');
   dot.className = 'dot';
   const bubble = document.createElement('div');
-  bubble.className = 'bubble' + (opts.error ? ' error' : '');
+  bubble.className = `bubble ${role}${opts.error ? ' error' : ''}`;
   if (opts.typing) {
     bubble.innerHTML = `<div class="typing"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`;
   } else if (opts.html) {
@@ -48,11 +63,11 @@ function addMessage(role: 'user' | 'assistant', content: string, opts: { html?: 
     bubble.textContent = content;
   }
   if (role === 'user') {
-    row.appendChild(dot);
     row.appendChild(bubble);
+    row.appendChild(dot);
   } else {
-    row.appendChild(bubble);
     row.appendChild(dot);
+    row.appendChild(bubble);
   }
   li.appendChild(row);
   els.messages.appendChild(li);
@@ -69,6 +84,26 @@ function renderResultBubble(raw: any) {
   return renderTable(rows, data.mode || undefined);
 }
 
+function extractExecutedQueries(raw: any): string[] {
+  if (!raw || typeof raw !== 'object') return [];
+
+  const direct = (raw as Record<string, unknown>).executed_query;
+  const list = (raw as Record<string, unknown>).executed_queries;
+
+  const queries: string[] = [];
+  if (typeof direct === 'string' && direct.trim()) {
+    queries.push(direct.trim());
+  }
+  if (Array.isArray(list)) {
+    list.forEach((item) => {
+      if (typeof item === 'string' && item.trim()) {
+        queries.push(item.trim());
+      }
+    });
+  }
+  return Array.from(new Set(queries));
+}
+
 function isArrayOfObjects(arr: any[]): boolean {
   return arr.every(v => v && typeof v === 'object' && !Array.isArray(v));
 }
@@ -79,7 +114,7 @@ function renderTable(rows: Record<string, any>[], caption?: string): string {
   if (allKeys.length === 0) return '<div class="placeholder">(empty)</div>';
   const header = allKeys.map(k => `<th>${escapeHtml(k)}</th>`).join('');
   const body = rows.map(r => `<tr>${allKeys.map(k => `<td>${escapeHtml(fmtValue(r[k]))}</td>`).join('')}</tr>`).join('');
-  return `<table>${caption ? `<caption style="caption-side:top;text-align:left;font-weight:600;padding:4px 0">${escapeHtml(caption)}</caption>` : ''}<thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
+  return `<div class="table-wrap"><table>${caption ? `<caption style="caption-side:top;text-align:left;font-weight:600;padding:4px 0">${escapeHtml(caption)}</caption>` : ''}<thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function fmtValue(v: any): string {
@@ -103,16 +138,83 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+function parseApiError(err: unknown): { summary: string; details?: string; generatedQuery?: string } {
+  const fallback = { summary: String(err) };
+  if (!(err instanceof Error)) return fallback;
+
+  const match = /^HTTP\s+\d+:\s*(.*)$/s.exec(err.message);
+  if (!match) return { summary: err.message };
+
+  const payload = match[1]?.trim();
+  if (!payload) return { summary: err.message };
+
+  try {
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    return {
+      summary: typeof parsed.message === 'string' ? parsed.message : err.message,
+      details: typeof parsed.errorType === 'string' ? parsed.errorType : undefined,
+      generatedQuery: typeof parsed.generatedQuery === 'string' ? parsed.generatedQuery : undefined,
+    };
+  } catch {
+    return { summary: payload };
+  }
+}
+
+function renderErrorBubble(err: unknown): string {
+  const parsed = parseApiError(err);
+  const sections = [`<strong>${escapeHtml(parsed.summary)}</strong>`];
+  if (parsed.details) {
+    sections.push(`<div class="error-meta">${escapeHtml(parsed.details)}</div>`);
+  }
+  if (parsed.generatedQuery) {
+    sections.push(`<pre>${escapeHtml(parsed.generatedQuery)}</pre>`);
+  }
+  return sections.join('');
+}
+
+function renderResponseChrome(contentHtml: string, executedQueries: string[]): string {
+  const inspectorId = `query-inspector-${responseInspectorId++}`;
+  const actions = executedQueries.length
+    ? `
+      <div class="assistant-tools">
+        <button type="button" class="tool-btn" data-toggle-query="${inspectorId}" aria-expanded="false" title="Show executed query">
+          <span class="tool-icon" aria-hidden="true">&#60;/&#62;</span>
+        </button>
+      </div>
+      <div class="query-inspector hidden" id="${inspectorId}">
+        <div class="query-inspector-title">Executed Query</div>
+        ${executedQueries.map((query) => `<pre>${escapeHtml(query)}</pre>`).join('')}
+      </div>
+    `
+    : '';
+
+  return `${actions}<div class="assistant-content">${contentHtml}</div>`;
+}
+
+function bindInspectorToggles(root: HTMLElement) {
+  root.querySelectorAll<HTMLButtonElement>('[data-toggle-query]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const targetId = button.getAttribute('data-toggle-query');
+      if (!targetId) return;
+
+      const panel = root.querySelector<HTMLElement>(`#${targetId}`);
+      if (!panel) return;
+
+      const isHidden = panel.classList.toggle('hidden');
+      button.setAttribute('aria-expanded', String(!isHidden));
+    });
+  });
+}
+
 function setStrategies(list: string[], defaultStrategy?: string) {
   if (!els.strategyMenu || !els.strategyLabel) return;
-  const unique = Array.from(new Set(list.filter(v => v === 'postgres' || v === 'mongodb')));
-  if (!unique.length) unique.push('mongodb', 'postgres');
-  if (defaultStrategy === 'postgres' || defaultStrategy === 'mongodb') currentStrategy = defaultStrategy;
+  const unique = Array.from(new Set(list.filter((v): v is Strategy => VALID_STRATEGIES.includes(v as Strategy))));
+  if (!unique.length) unique.push('mongodb', 'postgres', 'cassandra');
+  if (defaultStrategy && VALID_STRATEGIES.includes(defaultStrategy as Strategy)) currentStrategy = defaultStrategy as Strategy;
   els.strategyMenu.innerHTML = unique.map(v => {
-    const cap = v === 'postgres' ? 'Postgres' : 'MongoDB';
-    const file = v === 'postgres' ? 'postgres' : 'mongodb';
+    const meta = STRATEGY_META[v];
     const selected = v === currentStrategy;
-    return `<li role="option" data-value="${v}" aria-selected="${selected}"><img src="/assets/${file}.svg" alt="" class="logo" /><span>${cap}</span></li>`;
+    return `<li role="option" data-value="${v}" aria-selected="${selected}"><img src="/assets/${meta.icon}.svg" alt="" class="logo" /><span>${meta.label}</span></li>`;
   }).join('');
   updateStrategyUI();
 }
@@ -123,7 +225,7 @@ async function loadStrategies() {
     setStrategies(data.available_strategies ?? [], data.default_strategy);
   } catch (err) {
     console.error('Failed to load strategies', err);
-    const fallback = ['postgres', 'mongodb'];
+    const fallback: Strategy[] = ['postgres', 'mongodb', 'cassandra'];
     setStrategies(fallback, 'postgres');
     // System message fallback rendered as assistant
     addMessage('assistant', escapeHtml('Using fallback strategies (backend error): ' + fallback.join(', ')));
@@ -164,12 +266,15 @@ async function submit() {
   try {
     showLoading(true);
     const data = await fetchJSON<any>(url, { method: 'POST', body: JSON.stringify(body) });
+    thinkingBubble.classList.remove('assistant-table');
     thinkingBubble.classList.remove('error');
     const contentHtml = renderResultBubble(data);
-    const trimmed = contentHtml.trim();
-    thinkingBubble.innerHTML = trimmed;
+    const executedQueries = extractExecutedQueries(data);
+    const responseHtml = renderResponseChrome(contentHtml.trim(), executedQueries);
+    thinkingBubble.innerHTML = responseHtml;
+    bindInspectorToggles(thinkingBubble);
     // If assistant reply is just a table, drop bubble styling
-    if (trimmed.startsWith('<table')) {
+    if (contentHtml.includes('<table')) {
       thinkingBubble.classList.remove('bubble');
       thinkingBubble.classList.remove('error');
       thinkingBubble.classList.add('assistant-table');
@@ -181,8 +286,9 @@ async function submit() {
       renderSteps();
     }
   } catch (err) {
+    thinkingBubble.classList.remove('assistant-table');
     thinkingBubble.classList.add('error');
-    thinkingBubble.innerHTML = '<pre>' + escapeHtml(String(err)) + '</pre>';
+    thinkingBubble.innerHTML = renderErrorBubble(err);
     toast('Failed','error');
   } finally {
     showLoading(false);
@@ -198,6 +304,9 @@ function init() {
   els.modeToggle?.addEventListener('click', () => {
     toggleMode();
   });
+  els.stepsToggle?.addEventListener('click', () => {
+    toggleStepBuilder();
+  });
   updateModeToggle();
   // Strategy dropdown interactions
   els.strategyButton?.addEventListener('click', () => {
@@ -206,10 +315,9 @@ function init() {
   els.strategyMenu?.addEventListener('click', (e) => {
     const li = (e.target as HTMLElement).closest('li[data-value]');
     if (!li) return;
-    const val = li.getAttribute('data-value') as 'postgres' | 'mongodb';
+    const val = li.getAttribute('data-value') as Strategy;
     if (val && val !== currentStrategy) {
       currentStrategy = val;
-      toast('Strategy: ' + (val === 'postgres' ? 'Postgres' : 'MongoDB'), 'info');
       updateStrategyUI();
     }
     closeStrategyMenu();
@@ -230,14 +338,23 @@ function init() {
 clearChat();
 init();
 
-function toast(message: string, type: 'success' | 'error' | 'info' = 'info', timeout = 3000) {
+function toast(message: string, type: 'success' | 'error' | 'info' = 'info', timeout?: number) {
+  const ttl = timeout ?? (type === 'info' ? 900 : 1800);
+  const key = `${type}:${message}`;
+  const existing = els.toastContainer.querySelector<HTMLElement>(`.toast[data-key="${key}"]`);
+  if (existing) existing.remove();
+  if (type === 'info') {
+    els.toastContainer.querySelectorAll('.toast.info').forEach((node) => node.remove());
+  }
+
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  el.innerHTML = `<span>${escapeHtml(message)}</span><button class="close" aria-label="Close">×</button>`;
+  el.dataset.key = key;
+  el.innerHTML = `<span>${escapeHtml(message)}</span><button class="close" aria-label="Close">&times;</button>`;
   const close = () => { el.remove(); };
   el.querySelector('.close')?.addEventListener('click', close);
   els.toastContainer.appendChild(el);
-  setTimeout(close, timeout);
+  setTimeout(close, ttl);
 }
 
 function showLoading(on: boolean) { els.loadingOverlay.classList.toggle('hidden', !on); }
@@ -259,12 +376,11 @@ els.question.addEventListener('keydown', (e: KeyboardEvent) => {
 // Removed toggleStrategy & updateDbToggle; using select instead.
 function updateStrategyUI() {
   if (!els.strategyLabel || !els.strategyButton || !els.strategyMenu) return;
-  const cap = currentStrategy === 'postgres' ? 'Postgres' : 'MongoDB';
-  const file = currentStrategy === 'postgres' ? 'postgres' : 'mongodb';
-  els.strategyLabel.textContent = cap;
-  els.strategyButton.querySelector('img.logo')?.setAttribute('src', `/assets/${file}.svg`);
-  els.strategyButton.title = 'Strategy: ' + cap;
-  els.strategyButton.setAttribute('aria-label', 'Database strategy: ' + cap);
+  const meta = STRATEGY_META[currentStrategy];
+  els.strategyLabel.textContent = meta.label;
+  els.strategyButton.querySelector('img.logo')?.setAttribute('src', `/assets/${meta.icon}.svg`);
+  els.strategyButton.title = 'Strategy: ' + meta.label;
+  els.strategyButton.setAttribute('aria-label', 'Database strategy: ' + meta.label);
   els.strategyMenu.querySelectorAll('li[role="option"]').forEach(li => {
     const val = li.getAttribute('data-value');
     li.setAttribute('aria-selected', val === currentStrategy ? 'true' : 'false');
@@ -283,8 +399,13 @@ function closeStrategyMenu() {
 
 function toggleMode() {
   currentMode = currentMode === 'read' ? 'write' : 'read';
+  if (currentMode === 'read') {
+    isStepBuilderOpen = false;
+  } else {
+    isStepBuilderOpen = true;
+  }
+  closeStrategyMenu();
   updateModeToggle();
-  toast('Mode: ' + currentMode, 'info');
 }
 
 function updateModeToggle() {
@@ -295,16 +416,35 @@ function updateModeToggle() {
   // Dynamic placeholder based on mode
   if (currentMode === 'read') {
     els.question.placeholder = 'type your read message here';
+    if (els.modeBadge) els.modeBadge.textContent = 'Read Mode';
+    if (els.modeHint) els.modeHint.textContent = 'Responses stay on the left. Your prompts stay on the right.';
     // Show strategy dropdown for read mode
     els.strategyDropdown?.classList.remove('hidden');
-    // Hide step builder
-    els.stepBuilder?.classList.add('hidden');
+    els.stepsToggle?.classList.add('hidden');
+    isStepBuilderOpen = false;
   } else {
     els.question.placeholder = 'type your write message here (e.g. "in mongodb insert ... in postgres insert ...")';
+    if (els.modeBadge) els.modeBadge.textContent = 'Write Mode';
+    if (els.modeHint) els.modeHint.textContent = 'Steps stay pinned at the top while you compose.';
     // Hide strategy dropdown in write mode
     els.strategyDropdown?.classList.add('hidden');
-    // Show step builder
-    els.stepBuilder?.classList.remove('hidden');
+    els.stepsToggle?.classList.remove('hidden');
+  }
+  updateStepBuilderVisibility();
+}
+
+function toggleStepBuilder() {
+  if (currentMode !== 'write') return;
+  isStepBuilderOpen = !isStepBuilderOpen;
+  updateStepBuilderVisibility();
+}
+
+function updateStepBuilderVisibility() {
+  const shouldShow = currentMode === 'write' && isStepBuilderOpen;
+  els.stepBuilder?.classList.toggle('hidden', !shouldShow);
+  if (els.stepsToggle) {
+    els.stepsToggle.setAttribute('aria-pressed', String(shouldShow));
+    els.stepsToggle.classList.toggle('active', shouldShow);
   }
 }
 
@@ -317,13 +457,11 @@ function addStep() {
   const id = stepIdCounter++;
   manualSteps.push({ id, question: '', database: 'mongodb' });
   renderSteps();
-  toast('Step added', 'info');
 }
 
 function removeStep(id: number) {
   manualSteps = manualSteps.filter(s => s.id !== id);
   renderSteps();
-  toast('Step removed', 'info');
 }
 
 function updateStepQuestion(id: number, question: string) {
@@ -331,7 +469,7 @@ function updateStepQuestion(id: number, question: string) {
   if (step) step.question = question;
 }
 
-function updateStepDatabase(id: number, database: 'mongodb' | 'postgres') {
+function updateStepDatabase(id: number, database: Strategy) {
   const step = manualSteps.find(s => s.id === id);
   if (step) step.database = database;
   renderSteps();
@@ -343,7 +481,7 @@ function renderSteps() {
   els.addStepBtn.disabled = manualSteps.length >= 10;
   
   if (manualSteps.length === 0) {
-    els.stepsList.innerHTML = '<div style="text-align:center;color:var(--ctp-overlay1);font-size:13px;padding:20px;">No steps yet. Click "+ Add Step" or type naturally.</div>';
+    els.stepsList.innerHTML = '<div class="steps-empty">No steps yet. Click "+ Add Step" or type naturally.</div>';
     return;
   }
   
@@ -361,9 +499,13 @@ function renderSteps() {
             <img src="/assets/postgres.svg" alt="" />
             <span>Postgres</span>
           </div>
+          <div class="step-db-option ${step.database === 'cassandra' ? 'active' : ''}" data-id="${step.id}" data-db="cassandra">
+            <img src="/assets/cassandra.svg" alt="" />
+            <span>Cassandra</span>
+          </div>
         </div>
       </div>
-      <button class="step-remove" data-id="${step.id}">×</button>
+      <button class="step-remove" data-id="${step.id}">&times;</button>
     </div>
   `).join('');
   
@@ -378,7 +520,7 @@ function renderSteps() {
   els.stepsList.querySelectorAll('.step-db-option').forEach(option => {
     option.addEventListener('click', () => {
       const id = parseInt((option as HTMLElement).dataset.id || '0');
-      const db = (option as HTMLElement).dataset.db as 'mongodb' | 'postgres';
+      const db = (option as HTMLElement).dataset.db as Strategy;
       updateStepDatabase(id, db);
     });
   });
@@ -392,15 +534,17 @@ function renderSteps() {
 }
 
 function buildWritePayload(text: string): any {
-  const steps: { question: string; database: 'mongodb' | 'postgres' }[] = [];
+  const steps: { question: string; database: Strategy }[] = [];
   
   // Fuzzy match for typos
-  const fuzzyMatch = (word: string): 'mongodb' | 'postgres' | undefined => {
+  const fuzzyMatch = (word: string): Strategy | undefined => {
     const w = word.toLowerCase();
     if (/^(mongodb?|mong)$/i.test(w)) return 'mongodb';
     if (/^(postgres|postgresql|pg|postgre)$/i.test(w)) return 'postgres';
+    if (/^(cassandra|cass|cql|cassie)$/i.test(w)) return 'cassandra';
     if (levenshtein(w, 'mongo') <= 2 || levenshtein(w, 'mongodb') <= 2) return 'mongodb';
     if (levenshtein(w, 'postgres') <= 2 || levenshtein(w, 'pg') <= 1) return 'postgres';
+    if (levenshtein(w, 'cassandra') <= 2 || levenshtein(w, 'cass') <= 1) return 'cassandra';
     return undefined;
   };
 
@@ -434,7 +578,6 @@ function buildWritePayload(text: string): any {
     steps.splice(10);
   }
   if (steps.length) {
-    toast('Saga steps: ' + steps.length, 'info');
     return { steps };
   }
   return { question: text };
@@ -462,3 +605,4 @@ function levenshtein(a: string, b: string): number {
 }
 
 // Removed action bar & raw toggle for minimal UI.
+

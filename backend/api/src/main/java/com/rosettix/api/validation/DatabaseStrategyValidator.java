@@ -6,6 +6,7 @@ import jakarta.validation.ConstraintValidatorContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -33,8 +34,10 @@ public class DatabaseStrategyValidator implements ConstraintValidator<ValidDatab
             return allowNull;
         }
 
+        String normalizedValue = value.trim().toLowerCase(Locale.ROOT);
+
         // Check if the strategy exists
-        boolean isValid = strategies.containsKey(value.trim());
+        boolean isValid = strategies.containsKey(normalizedValue);
 
         if (!isValid) {
             // Customize the error message to include available strategies
