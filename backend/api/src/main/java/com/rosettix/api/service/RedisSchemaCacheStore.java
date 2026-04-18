@@ -10,7 +10,7 @@ import java.time.Duration;
 @RequiredArgsConstructor
 public class RedisSchemaCacheStore implements SchemaCacheStore {
 
-    private static final String KEY_PREFIX = "rosettix:schema:";
+    public static final String KEY_PREFIX = "rosettix:schema:";
 
     private final StringRedisTemplate redisTemplate;
 

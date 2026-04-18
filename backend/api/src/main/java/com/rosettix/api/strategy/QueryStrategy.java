@@ -44,6 +44,42 @@ public interface QueryStrategy {
     }
 
     /**
+     * Determine whether a query is read-only for this strategy.
+     * Strategies can override when they support non-SQL style commands.
+     * @param query The cleaned query string
+     * @return true when the query is read-only
+     */
+    default boolean isReadOperation(String query) {
+        if (query == null) {
+            return false;
+        }
+
+        String lower = query.toLowerCase();
+        return lower.startsWith("select")
+            || lower.contains(".find(")
+            || lower.contains(".count(");
+    }
+
+    /**
+     * Determine whether a query is a write operation for this strategy.
+     * @param query The cleaned query string
+     * @return true when the query mutates data
+     */
+    default boolean isWriteOperation(String query) {
+        if (query == null) {
+            return false;
+        }
+
+        String lower = query.toLowerCase();
+        return lower.contains("insert")
+            || lower.contains("update")
+            || lower.contains("delete")
+            || lower.contains(".insertone(")
+            || lower.contains(".updateone(")
+            || lower.contains(".deleteone(");
+    }
+
+    /**
      * Build a database-specific prompt for the LLM
      * @param question The user's natural language question
      * @param schema The schema representation for this database
@@ -74,6 +110,7 @@ public interface QueryStrategy {
         String cleaned = rawQuery
             .replace("```sql", "")
             .replace("```mongodb", "")
+            .replace("```redis", "")
             .replace("```javascript", "")
             .replace("```", "");
 
