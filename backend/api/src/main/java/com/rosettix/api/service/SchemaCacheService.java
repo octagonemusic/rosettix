@@ -5,12 +5,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.util.LinkedHashMap;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Map;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -22,18 +22,19 @@ import java.util.function.Supplier;
 public class SchemaCacheService {
 
     private final RosettixConfiguration configuration;
+    private final SchemaCacheStore schemaCacheStore;
     private final Clock clock;
-    private final Map<String, CachedSchema> schemaCache = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<String>> inFlightLoads = new ConcurrentHashMap<>();
     private final Map<String, SchemaCacheStats> metrics = new ConcurrentHashMap<>();
 
     @Autowired
-    public SchemaCacheService(RosettixConfiguration configuration) {
-        this(configuration, Clock.systemUTC());
+    public SchemaCacheService(RosettixConfiguration configuration, SchemaCacheStore schemaCacheStore) {
+        this(configuration, schemaCacheStore, Clock.systemUTC());
     }
 
-    SchemaCacheService(RosettixConfiguration configuration, Clock clock) {
+    public SchemaCacheService(RosettixConfiguration configuration, SchemaCacheStore schemaCacheStore, Clock clock) {
         this.configuration = configuration;
+        this.schemaCacheStore = schemaCacheStore;
         this.clock = clock;
     }
 
@@ -48,13 +49,13 @@ public class SchemaCacheService {
             return schema;
         }
 
-        CachedSchema cachedSchema = schemaCache.get(key);
-        if (cachedSchema != null && !isExpired(cachedSchema, schemaCacheConfig.getTtlMinutes())) {
+        String cachedSchema = readFromCache(key);
+        if (cachedSchema != null) {
             long elapsedNanos = System.nanoTime() - startNanos;
             SchemaCacheStats stats = getStats(key);
             stats.recordHit(elapsedNanos);
             log.info("Cache hit for schema: {}", key);
-            return cachedSchema.schema();
+            return cachedSchema;
         }
 
         CompletableFuture<String> newLoad = new CompletableFuture<>();
@@ -64,7 +65,7 @@ public class SchemaCacheService {
             try {
                 log.info("Cache miss, fetching schema: {}", key);
                 String schema = loader.get();
-                schemaCache.put(key, new CachedSchema(schema, Instant.now(clock)));
+                writeToCache(key, schema, Duration.ofMinutes(schemaCacheConfig.getTtlMinutes()));
                 SchemaCacheStats stats = getStats(key);
                 stats.recordMiss(System.nanoTime() - startNanos);
                 Double latencyReduction = stats.getEstimatedLatencyReductionPercent();
@@ -106,19 +107,32 @@ public class SchemaCacheService {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("enabled", schemaCacheConfig.isEnabled());
         response.put("ttl_minutes", schemaCacheConfig.getTtlMinutes());
+        response.put("store", schemaCacheStore.getStoreType());
         response.put("databases", databases);
         response.put("overall", aggregateSnapshot());
         response.put("timestamp", Instant.now(clock).toString());
         return response;
     }
 
-    private boolean isExpired(CachedSchema cachedSchema, long ttlMinutes) {
-        Duration age = Duration.between(cachedSchema.cachedAt(), Instant.now(clock));
-        return age.compareTo(Duration.ofMinutes(ttlMinutes)) > 0;
-    }
-
     private SchemaCacheStats getStats(String key) {
         return metrics.computeIfAbsent(key, ignored -> new SchemaCacheStats());
+    }
+
+    private String readFromCache(String key) {
+        try {
+            return schemaCacheStore.get(key);
+        } catch (Exception e) {
+            log.warn("Unable to read schema cache entry for {} from {}: {}", key, schemaCacheStore.getStoreType(), e.getMessage());
+            return null;
+        }
+    }
+
+    private void writeToCache(String key, String schema, Duration ttl) {
+        try {
+            schemaCacheStore.put(key, schema, ttl);
+        } catch (Exception e) {
+            log.warn("Unable to write schema cache entry for {} to {}: {}", key, schemaCacheStore.getStoreType(), e.getMessage());
+        }
     }
 
     private Map<String, Object> aggregateSnapshot() {
@@ -129,9 +143,6 @@ public class SchemaCacheService {
 
     private String formatReduction(double value) {
         return String.format("%.2f", value);
-    }
-
-    record CachedSchema(String schema, Instant cachedAt) {
     }
 
     static final class SchemaCacheStats {

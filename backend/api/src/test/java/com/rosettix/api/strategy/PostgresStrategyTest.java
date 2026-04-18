@@ -1,10 +1,12 @@
 package com.rosettix.api.strategy;
 
 import com.rosettix.api.config.RosettixConfiguration;
+import com.rosettix.api.service.InMemorySchemaCacheStore;
 import com.rosettix.api.service.SchemaCacheService;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 
@@ -27,7 +29,10 @@ class PostgresStrategyTest {
         RosettixConfiguration configuration = new RosettixConfiguration();
         configuration.getSchemaCache().setEnabled(true);
         configuration.getSchemaCache().setTtlMinutes(5);
-        SchemaCacheService schemaCacheService = new SchemaCacheService(configuration);
+        SchemaCacheService schemaCacheService = new SchemaCacheService(
+                configuration,
+                new InMemorySchemaCacheStore(Clock.systemUTC())
+        );
         PostgresStrategy strategy = new PostgresStrategy(jdbcTemplate, schemaCacheService);
 
         String first = strategy.getSchemaRepresentation();

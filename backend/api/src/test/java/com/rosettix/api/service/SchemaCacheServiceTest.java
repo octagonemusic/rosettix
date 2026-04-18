@@ -26,7 +26,7 @@ class SchemaCacheServiceTest {
     void returnsCachedValueWithinTtl() {
         RosettixConfiguration configuration = configuration(true, 5);
         MutableClock clock = new MutableClock(Instant.parse("2026-03-27T10:00:00Z"));
-        SchemaCacheService cacheService = new SchemaCacheService(configuration, clock);
+        SchemaCacheService cacheService = new SchemaCacheService(configuration, new InMemorySchemaCacheStore(clock), clock);
         AtomicInteger loaderCalls = new AtomicInteger();
 
         String first = cacheService.getSchema("postgres", () -> {
@@ -48,7 +48,7 @@ class SchemaCacheServiceTest {
     void loadsSchemaOnFirstMiss() {
         RosettixConfiguration configuration = configuration(true, 5);
         MutableClock clock = new MutableClock(Instant.parse("2026-03-27T10:00:00Z"));
-        SchemaCacheService cacheService = new SchemaCacheService(configuration, clock);
+        SchemaCacheService cacheService = new SchemaCacheService(configuration, new InMemorySchemaCacheStore(clock), clock);
         AtomicInteger loaderCalls = new AtomicInteger();
 
         String schema = cacheService.getSchema("mongodb", () -> {
@@ -64,7 +64,7 @@ class SchemaCacheServiceTest {
     void reloadsSchemaAfterExpiry() {
         RosettixConfiguration configuration = configuration(true, 5);
         MutableClock clock = new MutableClock(Instant.parse("2026-03-27T10:00:00Z"));
-        SchemaCacheService cacheService = new SchemaCacheService(configuration, clock);
+        SchemaCacheService cacheService = new SchemaCacheService(configuration, new InMemorySchemaCacheStore(clock), clock);
         AtomicInteger loaderCalls = new AtomicInteger();
 
         String first = cacheService.getSchema("postgres", () -> {
@@ -86,7 +86,7 @@ class SchemaCacheServiceTest {
     void bypassesCacheWhenDisabled() {
         RosettixConfiguration configuration = configuration(false, 5);
         MutableClock clock = new MutableClock(Instant.parse("2026-03-27T10:00:00Z"));
-        SchemaCacheService cacheService = new SchemaCacheService(configuration, clock);
+        SchemaCacheService cacheService = new SchemaCacheService(configuration, new InMemorySchemaCacheStore(clock), clock);
         AtomicInteger loaderCalls = new AtomicInteger();
 
         String first = cacheService.getSchema("mongodb", () -> {
@@ -108,7 +108,7 @@ class SchemaCacheServiceTest {
     void reportsLatencyReductionMetrics() {
         RosettixConfiguration configuration = configuration(true, 5);
         MutableClock clock = new MutableClock(Instant.parse("2026-03-27T10:00:00Z"));
-        SchemaCacheService cacheService = new SchemaCacheService(configuration, clock);
+        SchemaCacheService cacheService = new SchemaCacheService(configuration, new InMemorySchemaCacheStore(clock), clock);
 
         cacheService.getSchema("postgres", () -> {
             sleep(30);
@@ -124,6 +124,7 @@ class SchemaCacheServiceTest {
         Map<String, Object> postgres = (Map<String, Object>) databases.get("postgres");
 
         assertNotNull(postgres);
+        assertEquals("in-memory-test", snapshot.get("store"));
         assertEquals(1L, postgres.get("cache_hits"));
         assertEquals(1L, postgres.get("cache_misses"));
         assertTrue((Double) postgres.get("avg_miss_ms") > 0.0);
@@ -136,7 +137,7 @@ class SchemaCacheServiceTest {
     void deduplicatesConcurrentLoadsForSameKey() throws Exception {
         RosettixConfiguration configuration = configuration(true, 5);
         MutableClock clock = new MutableClock(Instant.parse("2026-03-27T10:00:00Z"));
-        SchemaCacheService cacheService = new SchemaCacheService(configuration, clock);
+        SchemaCacheService cacheService = new SchemaCacheService(configuration, new InMemorySchemaCacheStore(clock), clock);
         AtomicInteger loaderCalls = new AtomicInteger();
         int callers = 10;
         ExecutorService executor = Executors.newFixedThreadPool(callers);

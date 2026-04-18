@@ -6,11 +6,13 @@ import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.ListCollectionNamesIterable;
 import com.rosettix.api.config.RosettixConfiguration;
+import com.rosettix.api.service.InMemorySchemaCacheStore;
 import com.rosettix.api.service.SchemaCacheService;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.mongodb.core.MongoTemplate;
 
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -49,7 +51,10 @@ class MongoStrategyTest {
         RosettixConfiguration configuration = new RosettixConfiguration();
         configuration.getSchemaCache().setEnabled(true);
         configuration.getSchemaCache().setTtlMinutes(5);
-        SchemaCacheService schemaCacheService = new SchemaCacheService(configuration);
+        SchemaCacheService schemaCacheService = new SchemaCacheService(
+                configuration,
+                new InMemorySchemaCacheStore(Clock.systemUTC())
+        );
         MongoStrategy strategy = new MongoStrategy(mongoTemplate, schemaCacheService);
 
         String first = strategy.getSchemaRepresentation();
