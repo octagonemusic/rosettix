@@ -64,13 +64,7 @@ public class OrchestratorService {
         }
 
         // 🔒 Strict read-only enforcement
-        String lower = cleanedQuery.toLowerCase();
-        boolean isReadQuery =
-                lower.startsWith("select") ||
-                lower.contains(".find(") ||
-                lower.contains(".count(");
-
-        if (!isReadQuery) {
+        if (!strategy.isReadOperation(cleanedQuery)) {
             log.warn("❌ Blocked non-read query on /api/query: {}", cleanedQuery);
             throw new QueryException(
                     "Only read operations (SELECT/find/count) are allowed on this endpoint. " +
@@ -134,16 +128,7 @@ public class OrchestratorService {
             }
 
             // 🔒 Only allow write operations
-            String lower = cleanedQuery.toLowerCase();
-            boolean isWriteQuery =
-                    lower.contains("insert") ||
-                    lower.contains("update") ||
-                    lower.contains("delete") ||
-                    lower.contains(".insertone(") ||
-                    lower.contains(".updateone(") ||
-                    lower.contains(".deleteone(");
-
-            if (!isWriteQuery) {
+            if (!strategy.isWriteOperation(cleanedQuery)) {
                 log.warn("❌ Blocked non-write query on /api/query/write: {}", cleanedQuery);
                 throw new QueryException(
                         "Only INSERT, UPDATE, or DELETE operations are allowed on this endpoint. " +
