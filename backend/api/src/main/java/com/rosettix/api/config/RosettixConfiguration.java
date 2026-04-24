@@ -45,9 +45,14 @@ public class RosettixConfiguration {
         private int timeoutSeconds = 30;
 
         /**
-         * Whether to enable query caching
+         * Whether to enable generated query caching for read requests
          */
         private boolean cachingEnabled = false;
+
+        /**
+         * Generated query cache TTL in minutes
+         */
+        private long cacheTtlMinutes = 30;
     }
 
     @Data
