@@ -53,6 +53,21 @@ public class RosettixConfiguration {
          * Generated query cache TTL in minutes
          */
         private long cacheTtlMinutes = 30;
+
+        /**
+         * Whether semantic prompt matching is enabled for read query caching
+         */
+        private boolean semanticMatchingEnabled = false;
+
+        /**
+         * Minimum cosine similarity required to reuse a semantically similar cached query
+         */
+        private double semanticThreshold = 0.92;
+
+        /**
+         * Maximum cached semantic candidates to evaluate per strategy/schema bucket
+         */
+        private int semanticMaxCandidates = 25;
     }
 
     @Data
@@ -71,6 +86,11 @@ public class RosettixConfiguration {
          * Timeout for LLM calls in seconds
          */
         private int timeoutSeconds = 30;
+
+        /**
+         * Model name to use for embedding generation
+         */
+        private String embeddingModelName = "text-embedding-004";
     }
 
     @Data

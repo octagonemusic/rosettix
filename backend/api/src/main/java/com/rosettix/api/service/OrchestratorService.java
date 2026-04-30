@@ -50,12 +50,11 @@ public class OrchestratorService {
         log.info("Processing READ query with strategy: {}", strategy.getStrategyName());
 
         String schemaRepresentation = strategy.getSchemaRepresentation();
-        String cachedQuery = queryGenerationCacheService.getCachedQuery(question, strategy, schemaRepresentation);
-        boolean cacheHit = cachedQuery != null;
+        QueryGenerationCacheMatch cacheMatch = queryGenerationCacheService.findCachedQuery(question, strategy, schemaRepresentation);
 
         // 🔹 Generate and clean query
-        String generatedQuery = cacheHit
-                ? cachedQuery
+        String generatedQuery = cacheMatch != null
+                ? cacheMatch.query()
                 : llmService.generateQuery(question, strategy, schemaRepresentation);
         String cleanedQuery = strategy.cleanQuery(generatedQuery);
 
@@ -85,7 +84,7 @@ public class OrchestratorService {
         try {
             log.info("Executing read query: {}", cleanedQuery);
             List<Map<String, Object>> results = strategy.executeQuery(cleanedQuery);
-            if (!cacheHit) {
+            if (cacheMatch == null || cacheMatch.matchType() == QueryGenerationCacheMatch.MatchType.SEMANTIC) {
                 queryGenerationCacheService.cacheQuery(question, strategy, schemaRepresentation, cleanedQuery);
             }
             return results;
