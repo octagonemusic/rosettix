@@ -2,6 +2,7 @@ package com.rosettix.api.service;
 
 import com.google.genai.Client;
 import com.google.genai.types.ContentEmbedding;
+import com.google.genai.types.EmbedContentConfig;
 import com.google.genai.types.EmbedContentResponse;
 import com.rosettix.api.config.RosettixConfiguration;
 import com.rosettix.api.exception.QueryException;
@@ -22,7 +23,10 @@ public class EmbeddingService {
     public List<Float> embedText(String text) {
         try {
             String modelName = rosettixConfiguration.getLlm().getEmbeddingModelName();
-            EmbedContentResponse response = geminiClient.models.embedContent(modelName, text, null);
+            EmbedContentConfig embedConfig = EmbedContentConfig.builder()
+                    .outputDimensionality(rosettixConfiguration.getLlm().getEmbeddingDimensions())
+                    .build();
+            EmbedContentResponse response = geminiClient.models.embedContent(modelName, text, embedConfig);
             List<ContentEmbedding> embeddings = response.embeddings().orElse(List.of());
             if (embeddings.isEmpty()) {
                 throw new IllegalStateException("Embedding response did not contain any vectors");
