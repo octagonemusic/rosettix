@@ -22,6 +22,7 @@ import java.util.Set;
 public class OrchestratorService {
 
     private final LlmService llmService;
+    private final QueryGenerationCacheService queryGenerationCacheService;
     private final Map<String, QueryStrategy> strategies; // Spring auto-injects all @Component strategies
     private final RosettixConfiguration rosettixConfiguration;
     @Autowired
@@ -48,8 +49,14 @@ public class OrchestratorService {
 
         log.info("Processing READ query with strategy: {}", strategy.getStrategyName());
 
+        String schemaRepresentation = strategy.getSchemaRepresentation();
+        String cachedQuery = queryGenerationCacheService.getCachedQuery(question, strategy, schemaRepresentation);
+        boolean cacheHit = cachedQuery != null;
+
         // 🔹 Generate and clean query
-        String generatedQuery = llmService.generateQuery(question, strategy);
+        String generatedQuery = cacheHit
+                ? cachedQuery
+                : llmService.generateQuery(question, strategy, schemaRepresentation);
         String cleanedQuery = strategy.cleanQuery(generatedQuery);
 
         // 🔹 Validate basic query safety
@@ -77,7 +84,11 @@ public class OrchestratorService {
 
         try {
             log.info("Executing read query: {}", cleanedQuery);
-            return strategy.executeQuery(cleanedQuery);
+            List<Map<String, Object>> results = strategy.executeQuery(cleanedQuery);
+            if (!cacheHit) {
+                queryGenerationCacheService.cacheQuery(question, strategy, schemaRepresentation, cleanedQuery);
+            }
+            return results;
         } catch (RuntimeException e) {
             handleRuntimeError(e, strategyName, cleanedQuery);
             return List.of();

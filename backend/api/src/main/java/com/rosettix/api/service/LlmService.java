@@ -19,6 +19,10 @@ public class LlmService {
 
     public String generateQuery(String question, QueryStrategy strategy) {
         String schema = strategy.getSchemaRepresentation();
+        return generateQuery(question, strategy, schema);
+    }
+
+    public String generateQuery(String question, QueryStrategy strategy, String schema) {
         String queryLanguage = strategy.getQueryLanguage();
 
         String prompt = strategy.buildPrompt(question, schema);
