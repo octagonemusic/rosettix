@@ -3,6 +3,7 @@ package com.rosettix.api.controller;
 import com.rosettix.api.config.RosettixConfiguration;
 import com.rosettix.api.dto.QueryRequest;
 import com.rosettix.api.saga.SagaStep;
+import com.rosettix.api.service.QueryGenerationCacheService;
 import com.rosettix.api.service.SchemaCacheService;
 import com.rosettix.api.service.OrchestratorService;
 import jakarta.validation.Valid;
@@ -24,6 +25,7 @@ public class QueryController {
     private final OrchestratorService orchestratorService;
     private final RosettixConfiguration rosettixConfiguration;
     private final SchemaCacheService schemaCacheService;
+    private final QueryGenerationCacheService queryGenerationCacheService;
 
     // ============================================================
     // 1️⃣ READ-ONLY ENDPOINT (Supports Single Query or Saga)
@@ -161,5 +163,15 @@ public class QueryController {
     @GetMapping("/schema-cache/metrics")
     public ResponseEntity<Map<String, Object>> getSchemaCacheMetrics() {
         return ResponseEntity.ok(schemaCacheService.getMetricsSnapshot());
+    }
+
+    @GetMapping("/query-cache/metrics")
+    public ResponseEntity<Map<String, Object>> getQueryCacheMetrics() {
+        return ResponseEntity.ok(queryGenerationCacheService.getMetricsSnapshot());
+    }
+
+    @PostMapping("/query-cache/reset")
+    public ResponseEntity<Map<String, Object>> resetQueryCache() {
+        return ResponseEntity.ok(queryGenerationCacheService.reset());
     }
 }

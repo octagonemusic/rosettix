@@ -20,3 +20,6 @@ yarn-error.log*
 
 .metals/
 .vscode/
+
+backend/api/benchmark-reports/*.json
+backend/api/benchmark-reports/*.md
