@@ -88,6 +88,78 @@ class OrchestratorServiceTest {
         verify(strategy, times(2)).executeQuery("SELECT id, email FROM users");
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void semanticReuseBackfillsAnExactCacheEntryForFollowUpPrompt() {
+        RosettixConfiguration configuration = baseConfiguration();
+        configuration.getQuery().setSemanticMatchingEnabled(true);
+
+        LlmService llmService = mock(LlmService.class);
+        QueryStrategy strategy = mockStrategy();
+
+        when(llmService.generateQuery("show all users", strategy, "users(id, email);"))
+                .thenReturn("SELECT id, email FROM users");
+
+        QueryGenerationCacheService queryCacheService = queryCacheService(
+                configuration,
+                Map.of(
+                        "show all users", vector(1.0f, 0.0f),
+                        "list every user", vector(0.99f, 0.01f)
+                )
+        );
+        OrchestratorService orchestratorService = new OrchestratorService(
+                llmService,
+                queryCacheService,
+                Map.of("postgres", strategy),
+                configuration
+        );
+
+        orchestratorService.processQuery("show all users", "postgres");
+        orchestratorService.processQuery("list every user", "postgres");
+        orchestratorService.processQuery("list every user", "postgres");
+
+        Map<String, Object> snapshot = queryCacheService.getMetricsSnapshot();
+        Map<String, Object> strategies = (Map<String, Object>) snapshot.get("strategies");
+        Map<String, Object> postgres = (Map<String, Object>) strategies.get("postgres");
+
+        verify(llmService, times(1)).generateQuery("show all users", strategy, "users(id, email);");
+        assertEquals(1L, postgres.get("semantic_hits"));
+        assertEquals(1L, postgres.get("exact_hits"));
+        assertEquals(2L, postgres.get("exact_writes"));
+    }
+
+    @Test
+    void fallsBackToLlmWhenSemanticLookupFails() {
+        RosettixConfiguration configuration = baseConfiguration();
+        configuration.getQuery().setSemanticMatchingEnabled(true);
+
+        LlmService llmService = mock(LlmService.class);
+        QueryStrategy strategy = mockStrategy();
+
+        when(llmService.generateQuery("show all users", strategy, "users(id, email);"))
+                .thenReturn("SELECT id, email FROM users");
+        when(llmService.generateQuery("list every user", strategy, "users(id, email);"))
+                .thenReturn("SELECT id, email FROM users");
+
+        QueryGenerationCacheService queryCacheService = queryCacheService(
+                configuration,
+                Map.of("show all users", vector(1.0f, 0.0f))
+        );
+        OrchestratorService orchestratorService = new OrchestratorService(
+                llmService,
+                queryCacheService,
+                Map.of("postgres", strategy),
+                configuration
+        );
+
+        orchestratorService.processQuery("show all users", "postgres");
+        List<Map<String, Object>> second = orchestratorService.processQuery("list every user", "postgres");
+
+        assertEquals(List.of(Map.of("id", 1, "email", "alice@example.com")), second);
+        verify(llmService, times(1)).generateQuery("show all users", strategy, "users(id, email);");
+        verify(llmService, times(1)).generateQuery("list every user", strategy, "users(id, email);");
+    }
+
     private RosettixConfiguration baseConfiguration() {
         RosettixConfiguration configuration = new RosettixConfiguration();
         configuration.setDefaultStrategy("postgres");
@@ -146,7 +218,13 @@ class OrchestratorServiceTest {
         when(redisTemplate.expire(anyString(), any())).thenReturn(true);
 
         EmbeddingService embeddingService = mock(EmbeddingService.class);
-        embeddings.forEach((text, vector) -> when(embeddingService.embedText(text)).thenReturn(vector));
+        when(embeddingService.embedText(anyString())).thenAnswer(invocation -> {
+            String text = invocation.getArgument(0);
+            if (!embeddings.containsKey(text)) {
+                throw new IllegalStateException("No embedding stub configured for: " + text);
+            }
+            return embeddings.get(text);
+        });
 
         return new QueryGenerationCacheService(
                 configuration,
