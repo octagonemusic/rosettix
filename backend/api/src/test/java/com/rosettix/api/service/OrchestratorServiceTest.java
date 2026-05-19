@@ -1,21 +1,20 @@
 package com.rosettix.api.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rosettix.api.config.RosettixConfiguration;
 import com.rosettix.api.strategy.QueryStrategy;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -36,10 +35,7 @@ class OrchestratorServiceTest {
         when(llmService.generateQuery(" Show   all USERS ", strategy, "users(id, email);"))
                 .thenReturn("SELECT id, email FROM users");
 
-        QueryGenerationCacheService queryCacheService = queryCacheService(
-                configuration,
-                Map.of()
-        );
+        QueryGenerationCacheService queryCacheService = queryCacheService(configuration, null);
         OrchestratorService orchestratorService = new OrchestratorService(
                 llmService,
                 queryCacheService,
@@ -66,13 +62,12 @@ class OrchestratorServiceTest {
         when(llmService.generateQuery("show all users", strategy, "users(id, email);"))
                 .thenReturn("SELECT id, email FROM users");
 
-        QueryGenerationCacheService queryCacheService = queryCacheService(
-                configuration,
-                Map.of(
-                        "show all users", vector(1.0f, 0.0f),
-                        "list every user", vector(0.99f, 0.01f)
-                )
+        QueryGenerationCacheMatch semanticMatch = new QueryGenerationCacheMatch(
+                "SELECT id, email FROM users",
+                QueryGenerationCacheMatch.MatchType.SEMANTIC,
+                0.9999
         );
+        QueryGenerationCacheService queryCacheService = queryCacheService(configuration, null, semanticMatch);
         OrchestratorService orchestratorService = new OrchestratorService(
                 llmService,
                 queryCacheService,
@@ -113,47 +108,40 @@ class OrchestratorServiceTest {
 
     private QueryGenerationCacheService queryCacheService(
             RosettixConfiguration configuration,
-            Map<String, java.util.List<Float>> embeddings
+            QueryGenerationCacheMatch firstSemanticMatch,
+            QueryGenerationCacheMatch secondSemanticMatch
     ) {
         StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
         ValueOperations<String, String> valueOperations = mock(ValueOperations.class);
-        SetOperations<String, String> setOperations = mock(SetOperations.class);
         Map<String, String> valueStore = new ConcurrentHashMap<>();
-        Map<String, Set<String>> setStore = new ConcurrentHashMap<>();
 
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(redisTemplate.opsForSet()).thenReturn(setOperations);
         when(valueOperations.get(anyString())).thenAnswer(invocation -> valueStore.get(invocation.getArgument(0)));
         doAnswer(invocation -> {
             valueStore.put(invocation.getArgument(0), invocation.getArgument(1));
             return null;
         }).when(valueOperations).set(anyString(), anyString(), any());
-        when(setOperations.members(anyString())).thenAnswer(invocation ->
-                setStore.getOrDefault(invocation.getArgument(0), Set.of())
-        );
-        doAnswer(invocation -> {
-            String key = invocation.getArgument(0);
-            String value = invocation.getArgument(1);
-            setStore.computeIfAbsent(key, ignored -> new LinkedHashSet<>()).add(value);
-            return 1L;
-        }).when(setOperations).add(anyString(), anyString());
-        doAnswer(invocation -> {
-            String key = invocation.getArgument(0);
-            String value = invocation.getArgument(1);
-            setStore.computeIfAbsent(key, ignored -> new LinkedHashSet<>()).remove(value);
-            return 1L;
-        }).when(setOperations).remove(anyString(), anyString());
-        when(redisTemplate.expire(anyString(), any())).thenReturn(true);
 
         EmbeddingService embeddingService = mock(EmbeddingService.class);
-        embeddings.forEach((text, vector) -> when(embeddingService.embedText(text)).thenReturn(vector));
+        when(embeddingService.embedText(anyString())).thenReturn(vector(1.0f, 0.0f));
+
+        SemanticQueryCacheRepository repository = mock(SemanticQueryCacheRepository.class);
+        when(repository.findBestMatch(anyString(), anyString(), anyList(), anyDouble(), anyInt()))
+                .thenReturn(firstSemanticMatch, secondSemanticMatch);
 
         return new QueryGenerationCacheService(
                 configuration,
                 redisTemplate,
                 embeddingService,
-                new ObjectMapper()
+                repository
         );
+    }
+
+    private QueryGenerationCacheService queryCacheService(
+            RosettixConfiguration configuration,
+            QueryGenerationCacheMatch semanticMatch
+    ) {
+        return queryCacheService(configuration, semanticMatch, semanticMatch);
     }
 
     private java.util.List<Float> vector(float... values) {

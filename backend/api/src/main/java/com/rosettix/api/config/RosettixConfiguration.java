@@ -68,6 +68,11 @@ public class RosettixConfiguration {
          * Maximum cached semantic candidates to evaluate per strategy/schema bucket
          */
         private int semanticMaxCandidates = 25;
+
+        /**
+         * Whether to initialize the pgvector semantic cache schema on startup
+         */
+        private boolean semanticPgvectorAutoInit = true;
     }
 
     @Data
@@ -90,7 +95,12 @@ public class RosettixConfiguration {
         /**
          * Model name to use for embedding generation
          */
-        private String embeddingModelName = "text-embedding-004";
+        private String embeddingModelName = "gemini-embedding-001";
+
+        /**
+         * Output dimensionality to request from the embedding model
+         */
+        private int embeddingDimensions = 768;
     }
 
     @Data
